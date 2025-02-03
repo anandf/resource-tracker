@@ -34,12 +34,15 @@ func GetResourceRelation(configMap map[string]string, resources []*unstructured.
 
 func buildResourceTree(configMap map[string]string, resourceKey string, parentChildMap map[string][]string) {
 	// Get the parent resource
-	childResourceKey, ok := configMap[resourceKey]
+	childResourceKeys, ok := configMap[resourceKey]
 	if !ok {
 		return
 	}
-	// Add the parent-child relationship to the map
-	parentChildMap[resourceKey] = append(parentChildMap[resourceKey], childResourceKey)
 	// Recursively build the tree
-	buildResourceTree(configMap, childResourceKey, parentChildMap)
+	for _, childResourceKey := range strings.Split(childResourceKeys, ",") {
+		// Add the parent-child relationship to the map
+		parentChildMap[resourceKey] = append(parentChildMap[resourceKey], childResourceKey)
+		buildResourceTree(configMap, childResourceKey, parentChildMap)
+	}
+
 }
