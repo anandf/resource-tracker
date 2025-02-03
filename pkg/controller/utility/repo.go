@@ -14,6 +14,7 @@ import (
 	apiresource "github.com/argoproj/gitops-engine/pkg/utils/kube"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 )
 
@@ -86,8 +87,22 @@ func GetApplicationChildManifests(application *appv1alpha1.Application, proj *ap
 		return nil, fmt.Errorf("error fetching Kustomize settings: %w", err)
 	}
 
-	// Fetch cluster API details
-	clusterAPIDetails, err := getClusterAPIDetails()
+	server := application.Spec.Destination.Server
+	if server == "" {
+		if application.Spec.Destination.Name == "" {
+			return nil, fmt.Errorf("both destination server and name are empty")
+		}
+		server, err = getDestinationServer(ctx, db, application.Spec.Destination.Name)
+		if err != nil {
+			return nil, fmt.Errorf("error getting cluster: %w", err)
+		}
+	}
+	cluster, err := db.GetCluster(context.Background(), server)
+	if err != nil {
+		return nil, fmt.Errorf("error getting cluster: %w", err)
+	}
+	// Get the application cluster API details
+	clusterAPIDetails, err := getClusterAPIDetails(cluster.RESTConfig())
 	if err != nil {
 		return nil, fmt.Errorf("error fetching cluster API details: %w", err)
 	}
@@ -166,9 +181,7 @@ func GetApplicationChildManifests(application *appv1alpha1.Application, proj *ap
 			return nil, fmt.Errorf("error unmarshalling manifests: %w", err)
 		}
 		targetObjs = append(targetObjs, targetObj...)
-
 	}
-
 	return targetObjs, nil
 }
 
@@ -185,31 +198,35 @@ func unmarshalManifests(manifests []string) ([]*unstructured.Unstructured, error
 }
 
 // getClusterAPIDetails retrieves the server version and API resources from the Kubernetes cluster
-func getClusterAPIDetails() (*ClusterAPIDetails, error) {
-	// Load Kubernetes client configuration
-	config, err := clientcmd.BuildConfigFromFlags("", clientcmd.RecommendedHomeFile)
-	if err != nil {
-		return nil, fmt.Errorf("failed to load kubeconfig: %w", err)
-	}
-
-	// Initialize kube.Kubectl
+func getClusterAPIDetails(config *rest.Config) (*ClusterAPIDetails, error) {
 	kubectl := kubeutil.NewKubectl()
-
 	// Retrieve the server version
 	serverVersion, err := kubectl.GetServerVersion(config)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get server version: %w", err)
 	}
-
 	// Retrieve the API resources
 	apiResources, err := kubectl.GetAPIResources(config, false, &settings.ResourcesFilter{})
 	if err != nil {
 		return nil, fmt.Errorf("failed to get API resources: %w", err)
 	}
-
 	// Return the combined details
 	return &ClusterAPIDetails{
 		APIVersions:  serverVersion,
 		APIResources: apiResources,
 	}, nil
+}
+
+// getClusterAPIDetails retrieves the server version and API resources from the Kubernetes cluster
+func getDestinationServer(ctx context.Context, db db.ArgoDB, clusterName string) (string, error) {
+	servers, err := db.GetClusterServersByName(ctx, clusterName)
+	if err != nil {
+		return "", fmt.Errorf("error getting cluster server by name %q: %w", clusterName, err)
+	}
+	if len(servers) > 1 {
+		return "", fmt.Errorf("there are %d clusters with the same name: %v", len(servers), servers)
+	} else if len(servers) == 0 {
+		return "", fmt.Errorf("there are no clusters with this name: %s", clusterName)
+	}
+	return servers[0], nil
 }
