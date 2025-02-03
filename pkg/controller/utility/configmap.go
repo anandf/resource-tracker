@@ -17,7 +17,7 @@ const (
 	ConfigMapName = "argocd-cm"
 )
 
-func UpdateResourceInclusion(resourceTree map[string][]string, k8sclient *kubernetes.Clientset) error {
+func UpdateResourceInclusion(resourceTree map[string][]string, k8sclient kubernetes.Interface) error {
 	// Fetch the ConfigMap from the argocd namespace
 	configMap, err := k8sclient.CoreV1().ConfigMaps("argocd").Get(context.Background(), ConfigMapName, metav1.GetOptions{})
 	if err != nil {

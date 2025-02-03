@@ -15,7 +15,6 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
-	"k8s.io/client-go/tools/clientcmd"
 )
 
 type ClusterAPIDetails struct {
@@ -24,22 +23,10 @@ type ClusterAPIDetails struct {
 }
 
 // GetApplicationChildManifests fetches manifests and filters direct child resources
-func GetApplicationChildManifests(application *appv1alpha1.Application, proj *appv1alpha1.AppProject, controllerNamespace string, repoServerAddress string, disableTLS bool) ([]*unstructured.Unstructured, error) {
+func GetApplicationChildManifests(application *appv1alpha1.Application, proj *appv1alpha1.AppProject, controllerNamespace string, repoServerAddress string, disableTLS bool, k8sclient kubernetes.Interface) ([]*unstructured.Unstructured, error) {
 	ctx := context.Background()
-	var kubeClientset kubernetes.Interface
-	config, err := clientcmd.BuildConfigFromFlags("", clientcmd.RecommendedHomeFile)
-	if err != nil {
-		return nil, fmt.Errorf("error building kubeconfig: %w", err)
-	}
-
-	kubeClientset, err = kubernetes.NewForConfig(config)
-	if err != nil {
-		return nil, fmt.Errorf("error creating Kubernetes clientset: %w", err)
-	}
-
-	settingsMgr := settings.NewSettingsManager(ctx, kubeClientset, controllerNamespace)
-
-	db := db.NewDB(controllerNamespace, settingsMgr, kubeClientset)
+	settingsMgr := settings.NewSettingsManager(ctx, k8sclient, controllerNamespace)
+	db := db.NewDB(controllerNamespace, settingsMgr, k8sclient)
 
 	// Fetch Helm repositories
 	helmRepos, err := db.ListHelmRepositories(ctx)
