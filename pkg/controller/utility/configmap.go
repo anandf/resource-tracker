@@ -23,9 +23,7 @@ func UpdateResourceInclusion(resourceTree map[string][]string, k8sclient kuberne
 	if err != nil {
 		return fmt.Errorf("error fetching ConfigMap: %v", err)
 	}
-
 	groupVersion := groupResourcesByAPIGroup(resourceTree)
-
 	// Parse the existing resource inclusions
 	var existingResourceInclusions []map[string]interface{}
 	if existingYamlData, exists := configMap.Data["resource.inclusions"]; exists {
@@ -33,7 +31,6 @@ func UpdateResourceInclusion(resourceTree map[string][]string, k8sclient kuberne
 			return fmt.Errorf("error unmarshalling existing resource inclusions from YAML: %v", err)
 		}
 	}
-
 	// Convert existing data into a lookup map for quick checks
 	resourceMap := make(map[string]map[string]struct{})
 	for _, inclusion := range existingResourceInclusions {
@@ -51,7 +48,6 @@ func UpdateResourceInclusion(resourceTree map[string][]string, k8sclient kuberne
 			resourceMap[apiGroup][kind.(string)] = struct{}{}
 		}
 	}
-
 	changeDetected := false
 	for apiGroup, kinds := range groupVersion {
 		if _, exists := resourceMap[apiGroup]; !exists {
@@ -65,13 +61,11 @@ func UpdateResourceInclusion(resourceTree map[string][]string, k8sclient kuberne
 			}
 		}
 	}
-
 	// If no changes were detected, return early
 	if !changeDetected {
 		klog.Infof("No changes detected in resource inclusions. ConfigMap update not required.")
 		return nil
 	}
-
 	// Convert back to the required format
 	updatedResourceInclusions := make([]map[string]interface{}, 0, len(resourceMap))
 	for apiGroup, kindsSet := range resourceMap {
@@ -84,29 +78,24 @@ func UpdateResourceInclusion(resourceTree map[string][]string, k8sclient kuberne
 			"kinds":     kinds,
 		})
 	}
-
 	// Convert the new resource inclusion data to YAML
 	newYamlData, err := yaml.Marshal(updatedResourceInclusions)
 	if err != nil {
 		return fmt.Errorf("error marshalling updated resource inclusions to YAML: %v", err)
 	}
-
 	// Update the ConfigMap data
 	if configMap.Data == nil {
 		configMap.Data = make(map[string]string)
 	}
 	configMap.Data["resource.inclusions"] = string(newYamlData)
-
 	// Retry to update the ConfigMap in case of conflicts
 	err = retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		_, updateErr := k8sclient.CoreV1().ConfigMaps("argocd").Update(context.Background(), configMap, metav1.UpdateOptions{})
 		return updateErr
 	})
-
 	if err != nil {
 		return fmt.Errorf("error updating ConfigMap: %v", err)
 	}
-
 	klog.Infof("ConfigMap updated successfully.")
 	return nil
 }
@@ -118,12 +107,10 @@ func groupResourcesByAPIGroup(resourceTree map[string][]string) map[string][]str
 	for parent, children := range resourceTree {
 		parentGroup := strings.Split(parent, "_")[0]
 		parentKind := strings.Split(parent, "_")[1]
-
 		if _, exists := groupedResources[parentGroup]; !exists {
 			groupedResources[parentGroup] = make(map[string]struct{})
 		}
 		groupedResources[parentGroup][parentKind] = struct{}{}
-
 		for _, child := range children {
 			childGroup := strings.Split(child, "_")[0]
 			childKind := strings.Split(child, "_")[1]
@@ -134,7 +121,6 @@ func groupResourcesByAPIGroup(resourceTree map[string][]string) map[string][]str
 			groupedResources[childGroup][childKind] = struct{}{}
 		}
 	}
-
 	// Convert map of sets to map of slices
 	result := make(map[string][]string)
 	for group, kindsSet := range groupedResources {
@@ -142,6 +128,5 @@ func groupResourcesByAPIGroup(resourceTree map[string][]string) map[string][]str
 			result[group] = append(result[group], kind)
 		}
 	}
-
 	return result
 }
