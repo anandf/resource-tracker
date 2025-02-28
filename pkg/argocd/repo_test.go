@@ -1,4 +1,4 @@
-package utility
+package argocd
 
 import (
 	"context"
@@ -44,7 +44,7 @@ func TestGetApplicationChildManifests(t *testing.T) {
 			Name:      "argocd-cm",
 			Namespace: "test-argocd",
 			Labels: map[string]string{
-				"app.kubernetes.io/part-of": "argocd",
+				"app.kube.io/part-of": "argocd",
 			},
 		},
 		Data: make(map[string]string),

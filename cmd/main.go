@@ -1,116 +1,62 @@
-/*
-Copyright 2017 The Kubernetes Authors.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
-
 package main
 
 import (
-	"flag"
+	"os"
+	"time"
 
-	"github.com/anandf/resource-tracker/pkg/controller"
-	"k8s.io/klog/v2"
-
-	v1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/fields"
-	"k8s.io/client-go/discovery"
-	"k8s.io/client-go/dynamic"
-	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/tools/cache"
-	"k8s.io/client-go/tools/clientcmd"
-	"k8s.io/client-go/util/workqueue"
+	"github.com/anandf/resource-tracker/pkg/argocd"
+	"github.com/anandf/resource-tracker/pkg/kube"
+	"github.com/spf13/cobra"
 )
 
+var lastRun time.Time
+
+// Default ArgoCD server address when running in same cluster as ArgoCD
+const defaultArgoCDServerAddr = "argocd-server.argocd"
+
+// Default path to registry configuration
+const defaultRegistriesConfPath = "/app/config/registries.conf"
+
+// Default path to Git commit message template
+const defaultCommitTemplatePath = "/app/config/commit.template"
+
+const applicationsAPIKindK8S = "kube"
+const applicationsAPIKindArgoCD = "argocd"
+
+// ResourceTrackerConfig contains global configuration and required runtime data
+type ResourceTrackerConfig struct {
+	ApplicationsAPIKind string
+	ClientOpts          argocd.ClientOptions
+	ArgocdNamespace     string
+	DryRun              bool
+	CheckInterval       time.Duration
+	ArgoClient          argocd.ArgoCD
+	LogLevel            string
+	MaxConcurrency      int
+	HealthPort          int
+	MetricsPort         int
+	RegistriesConf      string
+	AppNamePatterns     []string
+	AppLabel            string
+	KubeClient          *kube.ResourceTrackerKubeClient
+}
+
+// newRootCommand implements the root command of argocd-image-updater
+func newRootCommand() error {
+	var rootCmd = &cobra.Command{
+		Use:   "argocd-resource-tracker",
+		Short: "Dynamically update resource.inclusions based on the resources managed by Argo Applications",
+	}
+	rootCmd.AddCommand(newRunCommand())
+	rootCmd.AddCommand(newVersionCommand())
+	err := rootCmd.Execute()
+	return err
+}
+
 func main() {
-	var kubeconfig string
-	var master string
-
-	flag.StringVar(&kubeconfig, "kubeconfig", "", "absolute path to the kubeconfig file")
-	flag.StringVar(&master, "master", "", "master url")
-	flag.Parse()
-
-	// creates the connection
-	clientcmd.NewDefaultClientConfigLoadingRules()
-	config, err := clientcmd.BuildConfigFromFlags(master, kubeconfig)
+	err := newRootCommand()
 	if err != nil {
-		klog.Fatal(err)
+		os.Exit(1)
 	}
-
-	// creates the clientset
-	clientset, err := kubernetes.NewForConfig(config)
-	if err != nil {
-		klog.Fatal(err)
-	}
-
-	// creates the Dynamic client to get owner references
-	dynClient, err := dynamic.NewForConfig(config)
-	if err != nil {
-		klog.Fatal(err)
-	}
-
-	disClient, err := discovery.NewDiscoveryClientForConfig(config)
-	if err != nil {
-		klog.Fatal(err)
-	}
-
-	// create the event watcher
-	eventListWatcher := cache.NewListWatchFromClient(clientset.CoreV1().RESTClient(), "events", "", fields.Everything())
-
-	// create the workqueue
-	queue := workqueue.NewTypedRateLimitingQueue(workqueue.DefaultTypedControllerRateLimiter[string]())
-
-	// Bind the workqueue to a cache with the help of an informer. This way we make sure that
-	// whenever the cache is updated, the event key is added to the workqueue.
-	// Note that when we finally process the item from the workqueue, we might see a newer version
-	// of the event than the version which was responsible for triggering the update.
-	// This will hold the client state, as we know it.
-	indexer, informer := cache.NewInformerWithOptions(cache.InformerOptions{
-		ListerWatcher: eventListWatcher,
-		ObjectType:    &v1.Event{},
-		ResyncPeriod:  0,
-		Handler: cache.ResourceEventHandlerFuncs{
-			AddFunc: func(obj interface{}) {
-				key, err := cache.MetaNamespaceKeyFunc(obj)
-				if err == nil {
-					queue.Add(key)
-				}
-			},
-			UpdateFunc: func(old interface{}, new interface{}) {
-				key, err := cache.MetaNamespaceKeyFunc(new)
-				if err == nil {
-					queue.Add(key)
-				}
-			},
-			DeleteFunc: func(obj interface{}) {
-				// IndexerInformer uses a delta queue, therefore for deletes we have to use this
-				// key function.
-				key, err := cache.DeletionHandlingMetaNamespaceKeyFunc(obj)
-				if err == nil {
-					queue.Add(key)
-				}
-			},
-		},
-		Indexers: cache.Indexers{},
-	})
-
-	controller := controller.NewController(queue, indexer.(cache.Indexer), informer, dynClient, disClient, clientset)
-
-	// Now let's start the controller
-	stop := make(chan struct{})
-	defer close(stop)
-	go controller.Run(1, stop)
-
-	// Wait forever
-	select {}
+	os.Exit(0)
 }
