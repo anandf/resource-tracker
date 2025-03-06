@@ -9,11 +9,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var lastRun time.Time
-
-// Default ArgoCD server address when running in same cluster as ArgoCD
-const defaultArgoCDServerAddr = "argocd-server.argocd"
-
 // Default path to registry configuration
 const defaultRegistriesConfPath = "/app/config/registries.conf"
 
@@ -33,11 +28,6 @@ type ResourceTrackerConfig struct {
 	ArgoClient          argocd.ArgoCD
 	LogLevel            string
 	MaxConcurrency      int
-	HealthPort          int
-	MetricsPort         int
-	RegistriesConf      string
-	AppNamePatterns     []string
-	AppLabel            string
 	KubeClient          *kube.ResourceTrackerKubeClient
 }
 
