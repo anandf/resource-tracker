@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 
+	"github.com/anandf/resource-tracker/pkg/version"
 	"github.com/spf13/cobra"
 )
 
