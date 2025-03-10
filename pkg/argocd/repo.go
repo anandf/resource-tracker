@@ -21,68 +21,68 @@ type ClusterAPIDetails struct {
 }
 
 // GetApplicationChildManifests fetches manifests and filters direct child resources
-func GetApplicationChildManifests(ctx context.Context, application *appsv1alpha1.Application, proj *appsv1alpha1.AppProject, controllerNamespace string, db db.ArgoDB, settingsMgr *settings.SettingsManager, repoClientset apiclient.Clientset, kubectl kube.Kubectl) ([]*unstructured.Unstructured, error) {
+func GetApplicationChildManifests(ctx context.Context, application *appsv1alpha1.Application, proj *appsv1alpha1.AppProject, controllerNamespace string, db db.ArgoDB, settingsMgr *settings.SettingsManager, repoClientset apiclient.Clientset, kubectl kube.Kubectl) ([]*unstructured.Unstructured, *rest.Config, error) {
 	// Fetch Helm repositories
 	helmRepos, err := db.ListHelmRepositories(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("error fetching Helm repositories: %w", err)
+		return nil, nil, fmt.Errorf("error fetching Helm repositories: %w", err)
 	}
 	// Filter permitted Helm repositories
 	permittedHelmRepos, err := argo.GetPermittedRepos(proj, helmRepos)
 	if err != nil {
-		return nil, fmt.Errorf("error filtering permitted Helm repositories: %w", err)
+		return nil, nil, fmt.Errorf("error filtering permitted Helm repositories: %w", err)
 	}
 	// Fetch Helm repository credentials
 	helmRepositoryCredentials, err := db.GetAllHelmRepositoryCredentials(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("error fetching Helm repository credentials: %w", err)
+		return nil, nil, fmt.Errorf("error fetching Helm repository credentials: %w", err)
 	}
 	// Filter permitted Helm credentials
 	permittedHelmCredentials, err := argo.GetPermittedReposCredentials(proj, helmRepositoryCredentials)
 	if err != nil {
-		return nil, fmt.Errorf("error filtering permitted Helm credentials: %w", err)
+		return nil, nil, fmt.Errorf("error filtering permitted Helm credentials: %w", err)
 	}
 	// Get enabled source types
 	enabledSourceTypes, err := settingsMgr.GetEnabledSourceTypes()
 	if err != nil {
-		return nil, fmt.Errorf("error getting enabled source types: %w", err)
+		return nil, nil, fmt.Errorf("error getting enabled source types: %w", err)
 	}
 	// Fetch Helm settings
 	helmOptions, err := settingsMgr.GetHelmSettings()
 	if err != nil {
-		return nil, fmt.Errorf("error fetching Helm settings: %w", err)
+		return nil, nil, fmt.Errorf("error fetching Helm settings: %w", err)
 	}
 	// Get installation ID
 	installationID, err := settingsMgr.GetInstallationID()
 	if err != nil {
-		return nil, fmt.Errorf("error getting installation ID: %w", err)
+		return nil, nil, fmt.Errorf("error getting installation ID: %w", err)
 	}
 	kustomizeSettings, err := settingsMgr.GetKustomizeSettings()
 	if err != nil {
-		return nil, fmt.Errorf("error fetching Kustomize settings: %w", err)
+		return nil, nil, fmt.Errorf("error fetching Kustomize settings: %w", err)
 	}
 	server := application.Spec.Destination.Server
 	if server == "" {
 		if application.Spec.Destination.Name == "" {
-			return nil, fmt.Errorf("both destination server and name are empty")
+			return nil, nil, fmt.Errorf("both destination server and name are empty")
 		}
 		server, err = getDestinationServer(ctx, db, application.Spec.Destination.Name)
 		if err != nil {
-			return nil, fmt.Errorf("error getting cluster: %w", err)
+			return nil, nil, fmt.Errorf("error getting cluster: %w", err)
 		}
 	}
 	cluster, err := db.GetCluster(ctx, server)
 	if err != nil {
-		return nil, fmt.Errorf("error getting cluster: %w", err)
+		return nil, nil, fmt.Errorf("error getting cluster: %w", err)
 	}
 	clusterAPIDetails, err := getClusterAPIDetails(cluster.RESTConfig(), kubectl)
 	if err != nil {
-		return nil, fmt.Errorf("error fetching cluster API details: %w", err)
+		return nil, nil, fmt.Errorf("error fetching cluster API details: %w", err)
 	}
 	// Establish a connection with the repo-server
 	conn, repoClient, err := repoClientset.NewRepoServerClient()
 	if err != nil {
-		return nil, fmt.Errorf("error connecting to repo-server: %w", err)
+		return nil, nil, fmt.Errorf("error connecting to repo-server: %w", err)
 	}
 	defer io.Close(conn)
 	sources := make([]appsv1alpha1.ApplicationSource, 0)
@@ -99,18 +99,18 @@ func GetApplicationChildManifests(ctx context.Context, application *appsv1alpha1
 	}
 	refSources, err := argo.GetRefSources(ctx, sources, application.Spec.Project, db.GetRepository, revisions, false)
 	if err != nil {
-		return nil, fmt.Errorf("error getting ref sources: %w", err)
+		return nil, nil, fmt.Errorf("error getting ref sources: %w", err)
 	}
 	targetObjs := make([]*unstructured.Unstructured, 0)
 	for i, source := range sources {
 
 		repo, err := db.GetRepository(ctx, source.RepoURL, proj.Name)
 		if err != nil {
-			return nil, fmt.Errorf("error fetching repository: %w", err)
+			return nil, nil, fmt.Errorf("error fetching repository: %w", err)
 		}
 		kustomizeOptions, err := kustomizeSettings.GetOptions(source)
 		if err != nil {
-			return nil, fmt.Errorf("error getting ref sources: %w", err)
+			return nil, nil, fmt.Errorf("error getting ref sources: %w", err)
 		}
 		// Generate manifest using the RepoServer client
 		manifestInfo, err := repoClient.GenerateManifest(ctx, &apiclient.ManifestRequest{
@@ -134,15 +134,15 @@ func GetApplicationChildManifests(ctx context.Context, application *appsv1alpha1
 			InstallationID:     installationID,
 		})
 		if err != nil {
-			return nil, fmt.Errorf("error generating manifest: %w", err)
+			return nil, nil, fmt.Errorf("error generating manifest: %w", err)
 		}
 		targetObj, err := unmarshalManifests(manifestInfo.Manifests)
 		if err != nil {
-			return nil, fmt.Errorf("error unmarshalling manifests: %w", err)
+			return nil, nil, fmt.Errorf("error unmarshalling manifests: %w", err)
 		}
 		targetObjs = append(targetObjs, targetObj...)
 	}
-	return targetObjs, nil
+	return targetObjs, cluster.RESTConfig(), nil
 }
 func unmarshalManifests(manifests []string) ([]*unstructured.Unstructured, error) {
 	targetObjs := make([]*unstructured.Unstructured, 0)

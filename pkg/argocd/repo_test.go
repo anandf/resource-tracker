@@ -73,7 +73,7 @@ func TestGetApplicationChildManifests(t *testing.T) {
 	t.Run("success on GenerateManifest", func(t *testing.T) {
 		mockKubectl, db, settingsManager, mockRepoClientset := setupMocks()
 		mockRepoClientset.RepoServerServiceClient.(*mockrepoclient.RepoServerServiceClient).On("GenerateManifest", mock.Anything, mock.Anything).Return(&apiclient.ManifestResponse{}, nil)
-		_, err := GetApplicationChildManifests(ctx, &v1alpha1.Application{
+		_, _, err := GetApplicationChildManifests(ctx, &v1alpha1.Application{
 			Spec: v1alpha1.ApplicationSpec{
 				Destination: v1alpha1.ApplicationDestination{
 					Server: "test",
@@ -86,7 +86,7 @@ func TestGetApplicationChildManifests(t *testing.T) {
 		mockKubectl, db, settingsManager, mockRepoClientset := setupMocks()
 		mockRepoClientset.RepoServerServiceClient.(*mockrepoclient.RepoServerServiceClient).On("GenerateManifest", mock.Anything, mock.Anything).Return(&apiclient.ManifestResponse{}, fmt.Errorf("error"))
 
-		_, err := GetApplicationChildManifests(ctx, &v1alpha1.Application{
+		_, _, err := GetApplicationChildManifests(ctx, &v1alpha1.Application{
 			Spec: v1alpha1.ApplicationSpec{
 				Destination: v1alpha1.ApplicationDestination{
 					Server: "test",
