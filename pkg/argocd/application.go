@@ -9,14 +9,10 @@ import (
 	"github.com/argoproj/argo-cd/v2/common"
 	"github.com/argoproj/argo-cd/v2/pkg/apis/application/v1alpha1"
 	"github.com/argoproj/argo-cd/v2/pkg/client/clientset/versioned"
-	"github.com/argoproj/argo-cd/v2/reposerver/apiclient"
-	"github.com/argoproj/argo-cd/v2/util/db"
-	kubeutil "github.com/argoproj/argo-cd/v2/util/kube"
-	"github.com/argoproj/argo-cd/v2/util/settings"
 	log "github.com/sirupsen/logrus"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/tools/clientcmd"
+	"k8s.io/client-go/rest"
 	"k8s.io/klog/v2"
 )
 
@@ -24,6 +20,7 @@ import (
 type ArgoCD interface {
 	ListApplications() ([]v1alpha1.Application, error)
 	ProcessApplication(v1alpha1.Application) error
+	FilterApplicationsByArgoCDNamespace([]v1alpha1.Application, string) []v1alpha1.Application
 }
 
 type ResourceTrackerResult struct {
@@ -31,7 +28,10 @@ type ResourceTrackerResult struct {
 	NumErrors                int
 }
 
-func FilterApplicationsByArgoCDNamespace(apps []v1alpha1.Application, namespace string) []v1alpha1.Application {
+func (argocd *argocd) FilterApplicationsByArgoCDNamespace(apps []v1alpha1.Application, namespace string) []v1alpha1.Application {
+	if namespace == "" {
+		namespace = argocd.kubeClient.Namespace
+	}
 	var filteredApps []v1alpha1.Application
 	for _, app := range apps {
 		if app.Status.ControllerNamespace == namespace {
@@ -46,11 +46,12 @@ type argocd struct {
 	kubeClient           *kube.KubeClient
 	ApplicationClientSet versioned.Interface
 	resourceMapperStore  map[string]*resourcegraph.ResourceMapper
+	repoServer           *repoServerManager
 }
 
 // ListApplications lists all applications across all namespaces.
-func (argocd *argocd) ListApplications() ([]v1alpha1.Application, error) {
-	list, err := argocd.ApplicationClientSet.ArgoprojV1alpha1().Applications(v1.NamespaceAll).List(context.TODO(), v1.ListOptions{})
+func (a *argocd) ListApplications() ([]v1alpha1.Application, error) {
+	list, err := a.ApplicationClientSet.ArgoprojV1alpha1().Applications(v1.NamespaceAll).List(context.TODO(), v1.ListOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("error listing applications: %w", err)
 	}
@@ -59,35 +60,27 @@ func (argocd *argocd) ListApplications() ([]v1alpha1.Application, error) {
 }
 
 // NewK8SClient creates a new kube client to interact with kube api-server.
-func NewK8SClient(kubeClient *kube.ResourceTrackerKubeClient) (ArgoCD, error) {
-	return &argocd{kubeClient: kubeClient.KubeClient, ApplicationClientSet: kubeClient.ApplicationClientSet}, nil
+func NewArgocd(kubeClient *kube.ResourceTrackerKubeClient) (ArgoCD, error) {
+	repoServer := NewRepoServerManager(kubeClient.KubeClient.Clientset, kubeClient.KubeClient.Namespace)
+	return &argocd{kubeClient: kubeClient.KubeClient, ApplicationClientSet: kubeClient.ApplicationClientSet, repoServer: repoServer}, nil
 }
 
-func (argocd *argocd) ProcessApplication(app v1alpha1.Application) error {
+func (a *argocd) ProcessApplication(app v1alpha1.Application) error {
 	// Fetch resource-relation-lookup ConfigMap
-	configMap, err := argocd.kubeClient.Clientset.CoreV1().ConfigMaps(app.Status.ControllerNamespace).Get(
+	configMap, err := a.kubeClient.Clientset.CoreV1().ConfigMaps(app.Status.ControllerNamespace).Get(
 		context.Background(), "resource-relation-lookup", v1.GetOptions{})
 	if err != nil {
 		return fmt.Errorf("failed to fetch resource-relation-lookup ConfigMap: %w", err)
 	}
 	resourceRelations := configMap.Data
 	// Fetch AppProject
-	appProject, err := argocd.ApplicationClientSet.ArgoprojV1alpha1().AppProjects(app.Status.ControllerNamespace).Get(
+	appProject, err := a.ApplicationClientSet.ArgoprojV1alpha1().AppProjects(app.Status.ControllerNamespace).Get(
 		context.Background(), app.Spec.Project, v1.GetOptions{})
 	if err != nil {
 		return fmt.Errorf("failed to fetch AppProject %s: %w", app.Spec.Project, err)
 	}
-	// Get RepoServer address
-	repoServerAddress, err := getRepoServerAddress(argocd.kubeClient.Clientset, app.Status.ControllerNamespace)
-	if err != nil {
-		return fmt.Errorf("failed to get repo server address: %w", err)
-	}
-	// Initialize required services
-	settingsManager := settings.NewSettingsManager(context.Background(), argocd.kubeClient.Clientset, app.Status.ControllerNamespace)
-	db := db.NewDB(app.Status.ControllerNamespace, settingsManager, argocd.kubeClient.Clientset)
-	repoClientset := apiclient.NewRepoServerClientset(repoServerAddress, 120, apiclient.TLSConfiguration{DisableTLS: false, StrictValidation: false})
 	// Get child manifests
-	targetObjs, destinationConfig, err := GetApplicationChildManifests(context.Background(), &app, appProject, app.Status.ControllerNamespace, db, settingsManager, repoClientset, kubeutil.NewKubectl())
+	targetObjs, destinationConfig, err := getApplicationChildManifests(context.Background(), &app, appProject, app.Status.ControllerNamespace, a.repoServer)
 	if err != nil {
 		return fmt.Errorf("failed to get application child manifests: %w", err)
 	}
@@ -102,24 +95,13 @@ func (argocd *argocd) ProcessApplication(app v1alpha1.Application) error {
 	}
 	// If missing resources are found, update the resource relations
 	if needsUpdate {
-		if argocd.resourceMapperStore == nil {
-			argocd.resourceMapperStore = make(map[string]*resourcegraph.ResourceMapper)
+		mapper, err := a.getOrCreateResourceMapper(destinationConfig)
+		if err != nil {
+			klog.Errorf("Failed to get resource mapper: %v", err)
+			return err
 		}
-		mapper, exists := argocd.resourceMapperStore[destinationConfig.ServerName]
-		if !exists {
-			var err error
-			mapper, err = resourcegraph.NewResourceMapper(destinationConfig)
-			if err != nil {
-				return fmt.Errorf("failed to create ResourceMapper: %w", err)
-			}
-			argocd.resourceMapperStore[destinationConfig.ServerName] = mapper
-		}
-		if mapper.RequireInit() {
-			if err := mapper.Init(); err != nil {
-				return fmt.Errorf("failed to initialize ResourceMapper: %w", err)
-			}
-		}
-		resourceRelations, err = updateResourceRelationLookup(mapper, app.Status.ControllerNamespace, argocd.kubeClient.Clientset)
+
+		resourceRelations, err = updateResourceRelationLookup(mapper, app.Status.ControllerNamespace, a.kubeClient.Clientset)
 		if err != nil {
 			klog.Errorf("failed to update resource-relation-lookup ConfigMap: %v", err)
 			return err
@@ -127,7 +109,25 @@ func (argocd *argocd) ProcessApplication(app v1alpha1.Application) error {
 	}
 	// Discover parent-child relationships
 	parentChildMap := kube.GetResourceRelation(resourceRelations, targetObjs)
-	return UpdateResourceInclusion(parentChildMap, argocd.kubeClient.Clientset, app.Status.ControllerNamespace)
+	return updateresourceInclusion(parentChildMap, a.kubeClient.Clientset, app.Status.ControllerNamespace)
+}
+
+func (a *argocd) getOrCreateResourceMapper(destinationConfig *rest.Config) (*resourcegraph.ResourceMapper, error) {
+	if a.resourceMapperStore == nil {
+		a.resourceMapperStore = make(map[string]*resourcegraph.ResourceMapper)
+	}
+	mapper, exists := a.resourceMapperStore[destinationConfig.ServerName]
+	if !exists {
+		var err error
+		mapper, err = resourcegraph.NewResourceMapper(destinationConfig)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create ResourceMapper: %w", err)
+		}
+		// Start informer
+		go mapper.StartInformer()
+		a.resourceMapperStore[destinationConfig.ServerName] = mapper
+	}
+	return mapper, nil
 }
 
 func getRepoServerAddress(k8sclient kubernetes.Interface, controllerNamespace string) (string, error) {
@@ -136,13 +136,7 @@ func getRepoServerAddress(k8sclient kubernetes.Interface, controllerNamespace st
 	if err != nil || len(serviceList.Items) == 0 {
 		return "", fmt.Errorf("failed to find repo server service: %w", err)
 	}
-	repoServerName, ok := serviceList.Items[0].Labels[common.LabelKeyAppName]
-	if !ok || repoServerName == "" {
-		return "", fmt.Errorf("repo server name label missing")
-	}
-	port, err := kubeutil.PortForward(8081, controllerNamespace, &clientcmd.ConfigOverrides{}, common.LabelKeyAppName+"="+repoServerName)
-	if err != nil {
-		return "", fmt.Errorf("failed to port-forward repo server: %w", err)
-	}
-	return fmt.Sprintf("localhost:%d", port), nil
+	repoServerName := serviceList.Items[0].Name
+
+	return fmt.Sprintf("%s.%s.svc.cluster.local:8081", repoServerName, controllerNamespace), nil
 }
