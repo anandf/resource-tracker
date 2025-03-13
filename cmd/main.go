@@ -8,12 +8,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// Default path to registry configuration
-const defaultRegistriesConfPath = "/app/config/registries.conf"
-
-// Default path to Git commit message template
-const defaultCommitTemplatePath = "/app/config/commit.template"
-
 // ResourceTrackerConfig contains global configuration and required runtime data
 type ResourceTrackerConfig struct {
 	ArgocdNamespace string
