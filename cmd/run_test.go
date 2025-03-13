@@ -15,7 +15,6 @@ func TestNewRunCommand(t *testing.T) {
 	asser.Contains(runCmd.Use, "run")
 	asser.Greater(len(runCmd.Short), 25)
 	asser.NotNil(runCmd.RunE)
-	asser.Equal(env.GetStringVal("APPLICATIONS_API", applicationsAPIKindK8S), runCmd.Flag("applications-api").Value.String())
 	asser.Equal(env.GetStringVal("ARGOCD_SERVER", ""), runCmd.Flag("argocd-server-addr").Value.String())
 	asser.Equal(env.GetStringVal("ARGOCD_GRPC_WEB", "false"), runCmd.Flag("argocd-grpc-web").Value.String())
 	asser.Equal(env.GetStringVal("ARGOCD_INSECURE", "false"), runCmd.Flag("argocd-insecure").Value.String())
