@@ -5,7 +5,6 @@ import (
 	"time"
 
 	"github.com/anandf/resource-tracker/pkg/argocd"
-	"github.com/anandf/resource-tracker/pkg/kube"
 	"github.com/spf13/cobra"
 )
 
@@ -15,23 +14,15 @@ const defaultRegistriesConfPath = "/app/config/registries.conf"
 // Default path to Git commit message template
 const defaultCommitTemplatePath = "/app/config/commit.template"
 
-const applicationsAPIKindK8S = "kube"
-const applicationsAPIKindArgoCD = "argocd"
-
 // ResourceTrackerConfig contains global configuration and required runtime data
 type ResourceTrackerConfig struct {
-	ApplicationsAPIKind string
-	ClientOpts          argocd.ClientOptions
-	ArgocdNamespace     string
-	DryRun              bool
-	CheckInterval       time.Duration
-	ArgoClient          argocd.ArgoCD
-	LogLevel            string
-	MaxConcurrency      int
-	KubeClient          *kube.ResourceTrackerKubeClient
+	ArgocdNamespace string
+	CheckInterval   time.Duration
+	ArgoClient      argocd.ArgoCD
+	LogLevel        string
 }
 
-// newRootCommand implements the root command of argocd-image-updater
+// newRootCommand implements the root command of argocd-resource-tracker
 func newRootCommand() error {
 	var rootCmd = &cobra.Command{
 		Use:   "argocd-resource-tracker",
