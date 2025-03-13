@@ -49,7 +49,6 @@ func NewKubernetesClientFromConfig(ctx context.Context, namespace string, kubeco
 			return nil, err
 		}
 	}
-
 	clientset, err := kubernetes.NewForConfig(config)
 	if err != nil {
 		return nil, err

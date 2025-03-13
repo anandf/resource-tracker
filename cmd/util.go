@@ -8,7 +8,7 @@ import (
 
 func getKubeConfig(ctx context.Context, namespace string, kubeConfig string) (*kube.ResourceTrackerKubeClient, error) {
 
-	kubeClient, err := kube.NewKubernetesClientFromConfig(ctx, kubeConfig, namespace)
+	kubeClient, err := kube.NewKubernetesClientFromConfig(ctx, namespace, kubeConfig)
 	if err != nil {
 		return nil, err
 	}
