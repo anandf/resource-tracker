@@ -10,7 +10,7 @@ import (
 )
 
 type ResourceTrackerKubeClient struct {
-	KubeClient           KubeClient
+	KubeClient           *KubeClient
 	ApplicationClientSet versioned.Interface
 }
 
@@ -31,7 +31,7 @@ func NewKubernetesClient(ctx context.Context, client kubernetes.Interface, names
 // NewKubernetesClient creates a new Kubernetes client object from given
 // configuration file. If configuration file is the empty string, in-cluster
 // client will be created.
-func NewKubernetesClientFromConfig(ctx context.Context, namespace string, kubeconfig string) (*KubeClient, error) {
+func NewKubernetesClientFromConfig(ctx context.Context, namespace string, kubeconfig string) (*ResourceTrackerKubeClient, error) {
 	loadingRules := clientcmd.NewDefaultClientConfigLoadingRules()
 	loadingRules.DefaultClientConfig = &clientcmd.DefaultClientConfig
 	loadingRules.ExplicitPath = kubeconfig
@@ -49,11 +49,17 @@ func NewKubernetesClientFromConfig(ctx context.Context, namespace string, kubeco
 			return nil, err
 		}
 	}
-
 	clientset, err := kubernetes.NewForConfig(config)
 	if err != nil {
 		return nil, err
 	}
+	applicationsClientset, err := versioned.NewForConfig(config)
+	if err != nil {
+		return nil, err
+	}
 
-	return NewKubernetesClient(ctx, clientset, namespace), nil
+	kc := &ResourceTrackerKubeClient{}
+	kc.ApplicationClientSet = applicationsClientset
+	kc.KubeClient = NewKubernetesClient(ctx, clientset, namespace)
+	return kc, nil
 }

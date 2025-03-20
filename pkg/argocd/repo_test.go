@@ -73,26 +73,37 @@ func TestGetApplicationChildManifests(t *testing.T) {
 	t.Run("success on GenerateManifest", func(t *testing.T) {
 		mockKubectl, db, settingsManager, mockRepoClientset := setupMocks()
 		mockRepoClientset.RepoServerServiceClient.(*mockrepoclient.RepoServerServiceClient).On("GenerateManifest", mock.Anything, mock.Anything).Return(&apiclient.ManifestResponse{}, nil)
-		_, err := GetApplicationChildManifests(ctx, &v1alpha1.Application{
+		repoServerManager := &repoServerManager{
+			db:            db,
+			settingsMgr:   settingsManager,
+			repoClientset: mockRepoClientset,
+			kubectl:       mockKubectl,
+		}
+		_, _, err := getApplicationChildManifests(ctx, &v1alpha1.Application{
 			Spec: v1alpha1.ApplicationSpec{
 				Destination: v1alpha1.ApplicationDestination{
 					Server: "test",
 				},
 			},
-		}, &v1alpha1.AppProject{}, "test-argocd", db, settingsManager, mockRepoClientset, mockKubectl)
+		}, &v1alpha1.AppProject{}, "test-argocd", repoServerManager)
 		assert.NoError(t, err)
 	})
 	t.Run("failure on GenerateManifest", func(t *testing.T) {
 		mockKubectl, db, settingsManager, mockRepoClientset := setupMocks()
 		mockRepoClientset.RepoServerServiceClient.(*mockrepoclient.RepoServerServiceClient).On("GenerateManifest", mock.Anything, mock.Anything).Return(&apiclient.ManifestResponse{}, fmt.Errorf("error"))
-
-		_, err := GetApplicationChildManifests(ctx, &v1alpha1.Application{
+		repoServerManager := &repoServerManager{
+			db:            db,
+			settingsMgr:   settingsManager,
+			repoClientset: mockRepoClientset,
+			kubectl:       mockKubectl,
+		}
+		_, _, err := getApplicationChildManifests(ctx, &v1alpha1.Application{
 			Spec: v1alpha1.ApplicationSpec{
 				Destination: v1alpha1.ApplicationDestination{
 					Server: "test",
 				},
 			},
-		}, &v1alpha1.AppProject{}, "test-argocd", db, settingsManager, mockRepoClientset, mockKubectl)
+		}, &v1alpha1.AppProject{}, "test-argocd", repoServerManager)
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "error")
 	})

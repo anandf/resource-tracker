@@ -1,0 +1,117 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  labels:
+    app.kubernetes.io/component: controller
+    app.kubernetes.io/name: argocd-resource-tracker
+    app.kubernetes.io/part-of: aargocd-resource-tracker
+  name: argocd-resource-tracker-sa
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  labels:
+    app.kubernetes.io/component: controller
+    app.kubernetes.io/name: argocd-resource-tracker
+    app.kubernetes.io/part-of: aargocd-resource-tracker
+  name: resource-relation-lookup
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: argocd-resource-tracker
+  labels:
+    app: argocd-resource-tracker
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: argocd-resource-tracker
+  template:
+    metadata:
+      labels:
+        app: argocd-resource-tracker
+    spec:
+      serviceAccountName: argocd-resource-tracker-sa
+      containers:
+        - name: argocd-resource-tracker
+          image: docker.io/mangaaldochub/argocd-resource-tracker:rc-v1@sha256:73952a9ba00915add2f8a6d78514f5652658e4fe89317a1345f6b7d03276c1c6
+          args: 
+          - run
+          resources:
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+            requests:
+              cpu: "250m"
+              memory: "256Mi"
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+              - ALL
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            seccompProfile:
+              type: RuntimeDefault    
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:
+    app.kubernetes.io/component: controller
+    app.kubernetes.io/name: argocd-resource-tracker
+    app.kubernetes.io/part-of: aargocd-resource-tracker
+  name: argocd-resource-tracker-clusterrole
+rules:
+  - apiGroups: ["*"]
+    resources: ["*"]
+    verbs: ["get", "list", "watch"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  labels:
+    app.kubernetes.io/component: controller
+    app.kubernetes.io/name: argocd-resource-tracker
+    app.kubernetes.io/part-of: aargocd-resource-tracker
+  name: argocd-resource-tracker-clusterrolebinding
+subjects:
+  - kind: ServiceAccount
+    name: argocd-resource-tracker-sa
+    namespace: argocd
+roleRef:
+  kind: ClusterRole
+  name: argocd-resource-tracker-clusterrole
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  labels:
+    app.kubernetes.io/component: controller
+    app.kubernetes.io/name: argocd-resource-tracker
+    app.kubernetes.io/part-of: aargocd-resource-tracker
+  name: argocd-resource-tracker-role
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list", "update", "create"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  labels:
+    app.kubernetes.io/component: controller
+    app.kubernetes.io/name: argocd-resource-tracker
+    app.kubernetes.io/part-of: aargocd-resource-tracker
+  name: argocd-resource-tracker-rolebinding
+subjects:
+  - kind: ServiceAccount
+    name: argocd-resource-tracker-sa
+roleRef:
+  kind: Role
+  name: argocd-resource-tracker-role
+  apiGroup: rbac.authorization.k8s.io

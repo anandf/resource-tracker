@@ -11,24 +11,12 @@ import (
 func GetResourceRelation(configMap map[string]string, resources []*unstructured.Unstructured) map[string][]string {
 	// Initialize the parent-child map
 	parentChildMap := make(map[string][]string)
-	// Helper function to get the key for a resource
-	getResourceKey := func(resource *unstructured.Unstructured) string {
-		group := ""
-		groupVersion := strings.Split(resource.GetAPIVersion(), "/")
-		if len(groupVersion) > 1 {
-			group = groupVersion[0]
-		} else {
-			group = "core"
-		}
-		return fmt.Sprintf("%s_%s", group, resource.GetKind())
-	}
 	// Iterate over the resources and build the parent-child map
 	for _, resource := range resources {
-		resourceKey := getResourceKey(resource)
+		resourceKey := GetResourceKey(resource.GetAPIVersion(), resource.GetKind())
 		visited := make(map[string]struct{})
 		buildResourceTree(configMap, resourceKey, parentChildMap, visited)
 	}
-
 	return parentChildMap
 }
 
@@ -49,4 +37,16 @@ func buildResourceTree(configMap map[string]string, resourceKey string, parentCh
 		parentChildMap[resourceKey] = append(parentChildMap[resourceKey], childResourceKey)
 		buildResourceTree(configMap, childResourceKey, parentChildMap, visited)
 	}
+}
+
+// GetResourceKey returns the key for a given resource.
+func GetResourceKey(groupVersion string, kind string) string {
+	group := ""
+	splitGroupVersion := strings.Split(groupVersion, "/")
+	if len(splitGroupVersion) > 1 {
+		group = splitGroupVersion[0]
+	} else {
+		group = "core"
+	}
+	return fmt.Sprintf("%s_%s", group, kind)
 }

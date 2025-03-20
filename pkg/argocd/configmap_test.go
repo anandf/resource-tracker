@@ -72,7 +72,7 @@ func TestGroupResourcesByAPIGroup(t *testing.T) {
 		})
 	}
 }
-func TestUpdateResourceInclusion(t *testing.T) {
+func TestUpdateresourceInclusion(t *testing.T) {
 	tests := []struct {
 		name         string
 		resourceTree map[string][]string
@@ -150,20 +150,20 @@ func TestUpdateResourceInclusion(t *testing.T) {
 			if tt.existingData != nil {
 				configMap := &v1.ConfigMap{
 					ObjectMeta: metav1.ObjectMeta{
-						Name:      ConfigMapName,
+						Name:      ARGOCD_CM,
 						Namespace: "argocd",
 					},
 					Data: tt.existingData,
 				}
 				client.CoreV1().ConfigMaps("argocd").Create(context.Background(), configMap, metav1.CreateOptions{})
 			}
-			err := UpdateResourceInclusion(tt.resourceTree, client)
+			err := updateresourceInclusion(tt.resourceTree, client, "argocd")
 			if (err != nil) != tt.expectError {
-				t.Errorf("UpdateResourceInclusion() error = %v, expectError %v", err, tt.expectError)
+				t.Errorf("UpdateresourceInclusion() error = %v, expectError %v", err, tt.expectError)
 				return
 			}
 			if !tt.expectError {
-				configMap, err := client.CoreV1().ConfigMaps("argocd").Get(context.Background(), ConfigMapName, metav1.GetOptions{})
+				configMap, err := client.CoreV1().ConfigMaps("argocd").Get(context.Background(), ARGOCD_CM, metav1.GetOptions{})
 				if err != nil {
 					t.Errorf("Error fetching ConfigMap: %v", err)
 					return

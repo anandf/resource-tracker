@@ -3,130 +3,55 @@ package argocd
 import (
 	"context"
 	"fmt"
-	"os"
-	"path/filepath"
 
 	"github.com/anandf/resource-tracker/pkg/kube"
-	argocdclient "github.com/argoproj/argo-cd/v2/pkg/apiclient"
-	"github.com/argoproj/argo-cd/v2/pkg/apiclient/application"
+	"github.com/anandf/resource-tracker/pkg/resourcegraph"
+	"github.com/argoproj/argo-cd/v2/common"
 	"github.com/argoproj/argo-cd/v2/pkg/apis/application/v1alpha1"
+	"github.com/argoproj/argo-cd/v2/pkg/client/clientset/versioned"
 	log "github.com/sirupsen/logrus"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
+	"k8s.io/klog/v2"
 )
-
-// Native
-type argoCD struct {
-	Client argocdclient.Client
-}
 
 // ArgoCD is the interface for accessing Argo CD functions we need
 type ArgoCD interface {
-	GetApplication(ctx context.Context, appName string) (*v1alpha1.Application, error)
-	ListApplications(labelSelector string) ([]v1alpha1.Application, error)
+	ListApplications() ([]v1alpha1.Application, error)
+	ProcessApplication(v1alpha1.Application) error
+	FilterApplicationsByArgoCDNamespace([]v1alpha1.Application, string) []v1alpha1.Application
 }
 
-type ResourceTrackerResult struct{}
-
-// Basic wrapper struct for ArgoCD client options
-type ClientOptions struct {
-	ServerAddr      string
-	Insecure        bool
-	Plaintext       bool
-	Certfile        string
-	GRPCWeb         bool
-	GRPCWebRootPath string
-	AuthToken       string
+type ResourceTrackerResult struct {
+	NumApplicationsProcessed int
+	NumErrors                int
 }
 
-// NewAPIClient creates a new API client for ArgoCD and connects to the ArgoCD Server
-func NewAPIClient(opts *ClientOptions) (ArgoCD, error) {
-
-	envAuthToken := os.Getenv("ARGOCD_TOKEN")
-	if envAuthToken != "" && opts.AuthToken == "" {
-		opts.AuthToken = envAuthToken
+func (argocd *argocd) FilterApplicationsByArgoCDNamespace(apps []v1alpha1.Application, namespace string) []v1alpha1.Application {
+	if namespace == "" {
+		namespace = argocd.kubeClient.Namespace
 	}
-
-	rOpts := argocdclient.ClientOptions{
-		ServerAddr:      opts.ServerAddr,
-		PlainText:       opts.Plaintext,
-		Insecure:        opts.Insecure,
-		CertFile:        opts.Certfile,
-		GRPCWeb:         opts.GRPCWeb,
-		GRPCWebRootPath: opts.GRPCWebRootPath,
-		AuthToken:       opts.AuthToken,
+	var filteredApps []v1alpha1.Application
+	for _, app := range apps {
+		if app.Status.ControllerNamespace == namespace {
+			filteredApps = append(filteredApps, app)
+		}
 	}
-	client, err := argocdclient.NewClient(&rOpts)
-	if err != nil {
-		return nil, err
-	}
-	return &argoCD{Client: client}, nil
-}
-
-// GetApplication gets the application named appName from Argo CD API
-func (client *argoCD) GetApplication(ctx context.Context, appName string) (*v1alpha1.Application, error) {
-	conn, appClient, err := client.Client.NewApplicationClient()
-	defer conn.Close()
-	app, err := appClient.Get(ctx, &application.ApplicationQuery{Name: &appName})
-	if err != nil {
-		return nil, err
-	}
-	return app, nil
-}
-
-// ListApplications returns a list of all application names that the API user
-// has access to.
-func (client *argoCD) ListApplications(labelSelector string) ([]v1alpha1.Application, error) {
-	conn, appClient, err := client.Client.NewApplicationClient()
-	if err != nil {
-		return nil, err
-	}
-	defer conn.Close()
-	apps, err := appClient.List(context.TODO(), &application.ApplicationQuery{Selector: &labelSelector})
-	if err != nil {
-		return nil, err
-	}
-	return apps.Items, nil
+	return filteredApps
 }
 
 // Kubernetes based client
-type k8sClient struct {
-	kubeClient *kube.ResourceTrackerKubeClient
-}
-
-// GetApplication retrieves an application by name across all namespaces.
-func (client *k8sClient) GetApplication(ctx context.Context, appName string) (*v1alpha1.Application, error) {
-	// List all applications across all namespaces (using empty labelSelector)
-	appList, err := client.ListApplications(v1.NamespaceAll)
-	if err != nil {
-		return nil, fmt.Errorf("error listing applications: %w", err)
-	}
-
-	// Filter applications by name using nameMatchesPattern
-	var matchedApps []v1alpha1.Application
-
-	for _, app := range appList {
-		log.Debugf("Found application: %s in namespace %s", app.Name, app.Namespace)
-		if nameMatchesPattern(app.Name, []string{appName}) {
-			log.Debugf("Application %s matches the pattern", app.Name)
-			matchedApps = append(matchedApps, app)
-		}
-	}
-
-	if len(matchedApps) == 0 {
-		return nil, fmt.Errorf("application %s not found", appName)
-	}
-
-	if len(matchedApps) > 1 {
-		return nil, fmt.Errorf("multiple applications found matching %s", appName)
-	}
-
-	// Retrieve the application in the specified namespace
-	return &matchedApps[0], nil
+type argocd struct {
+	kubeClient           *kube.KubeClient
+	ApplicationClientSet versioned.Interface
+	resourceMapperStore  map[string]*resourcegraph.ResourceMapper
+	repoServer           *repoServerManager
 }
 
 // ListApplications lists all applications across all namespaces.
-func (client *k8sClient) ListApplications(labelSelector string) ([]v1alpha1.Application, error) {
-	list, err := client.kubeClient.ApplicationClientSet.ArgoprojV1alpha1().Applications(v1.NamespaceAll).List(context.TODO(), v1.ListOptions{LabelSelector: labelSelector})
+func (a *argocd) ListApplications() ([]v1alpha1.Application, error) {
+	list, err := a.ApplicationClientSet.ArgoprojV1alpha1().Applications(v1.NamespaceAll).List(context.TODO(), v1.ListOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("error listing applications: %w", err)
 	}
@@ -135,22 +60,83 @@ func (client *k8sClient) ListApplications(labelSelector string) ([]v1alpha1.Appl
 }
 
 // NewK8SClient creates a new kube client to interact with kube api-server.
-func NewK8SClient(kubeClient *kube.ResourceTrackerKubeClient) (ArgoCD, error) {
-	return &k8sClient{kubeClient: kubeClient}, nil
+func NewArgocd(kubeClient *kube.ResourceTrackerKubeClient) (ArgoCD, error) {
+	repoServer := NewRepoServerManager(kubeClient.KubeClient.Clientset, kubeClient.KubeClient.Namespace)
+	return &argocd{kubeClient: kubeClient.KubeClient, ApplicationClientSet: kubeClient.ApplicationClientSet, repoServer: repoServer}, nil
 }
 
-// Match a name against a list of patterns
-func nameMatchesPattern(name string, patterns []string) bool {
-	if len(patterns) == 0 {
-		return true
+func (a *argocd) ProcessApplication(app v1alpha1.Application) error {
+	// Fetch resource-relation-lookup ConfigMap
+	configMap, err := a.kubeClient.Clientset.CoreV1().ConfigMaps(app.Status.ControllerNamespace).Get(
+		context.Background(), "resource-relation-lookup", v1.GetOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to fetch resource-relation-lookup ConfigMap: %w", err)
 	}
-	for _, p := range patterns {
-		log.Tracef("Matching application name %s against pattern %s", name, p)
-		if m, err := filepath.Match(p, name); err != nil {
-			log.Warnf("Invalid application name pattern '%s': %v", p, err)
-		} else if m {
-			return true
+	resourceRelations := configMap.Data
+	// Fetch AppProject
+	appProject, err := a.ApplicationClientSet.ArgoprojV1alpha1().AppProjects(app.Status.ControllerNamespace).Get(
+		context.Background(), app.Spec.Project, v1.GetOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to fetch AppProject %s: %w", app.Spec.Project, err)
+	}
+	// Get child manifests
+	targetObjs, destinationConfig, err := getApplicationChildManifests(context.Background(), &app, appProject, app.Status.ControllerNamespace, a.repoServer)
+	if err != nil {
+		return fmt.Errorf("failed to get application child manifests: %w", err)
+	}
+	// Check if all required resources exist in the current resourceRelations map
+	needsUpdate := false
+	for _, obj := range targetObjs {
+		resourceKey := kube.GetResourceKey(obj.GetAPIVersion(), obj.GetKind())
+		if _, exists := resourceRelations[resourceKey]; !exists {
+			needsUpdate = true
+			break
 		}
 	}
-	return false
+	// If missing resources are found, update the resource relations
+	if needsUpdate {
+		mapper, err := a.getOrCreateResourceMapper(destinationConfig)
+		if err != nil {
+			klog.Errorf("Failed to get resource mapper: %v", err)
+			return err
+		}
+
+		resourceRelations, err = updateResourceRelationLookup(mapper, app.Status.ControllerNamespace, a.kubeClient.Clientset)
+		if err != nil {
+			klog.Errorf("failed to update resource-relation-lookup ConfigMap: %v", err)
+			return err
+		}
+	}
+	// Discover parent-child relationships
+	parentChildMap := kube.GetResourceRelation(resourceRelations, targetObjs)
+	return updateresourceInclusion(parentChildMap, a.kubeClient.Clientset, app.Status.ControllerNamespace)
+}
+
+func (a *argocd) getOrCreateResourceMapper(destinationConfig *rest.Config) (*resourcegraph.ResourceMapper, error) {
+	if a.resourceMapperStore == nil {
+		a.resourceMapperStore = make(map[string]*resourcegraph.ResourceMapper)
+	}
+	mapper, exists := a.resourceMapperStore[destinationConfig.ServerName]
+	if !exists {
+		var err error
+		mapper, err = resourcegraph.NewResourceMapper(destinationConfig)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create ResourceMapper: %w", err)
+		}
+		// Start informer
+		go mapper.StartInformer()
+		a.resourceMapperStore[destinationConfig.ServerName] = mapper
+	}
+	return mapper, nil
+}
+
+func getRepoServerAddress(k8sclient kubernetes.Interface, controllerNamespace string) (string, error) {
+	labelSelector := fmt.Sprintf("%s=%s", common.LabelKeyComponentRepoServer, common.LabelValueComponentRepoServer)
+	serviceList, err := k8sclient.CoreV1().Services(controllerNamespace).List(context.Background(), v1.ListOptions{LabelSelector: labelSelector})
+	if err != nil || len(serviceList.Items) == 0 {
+		return "", fmt.Errorf("failed to find repo server service: %w", err)
+	}
+	repoServerName := serviceList.Items[0].Name
+
+	return fmt.Sprintf("%s.%s.svc.cluster.local:8081", repoServerName, controllerNamespace), nil
 }

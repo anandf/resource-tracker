@@ -9,7 +9,7 @@ var (
 	version    = "9.9.99"
 	buildDate  = "1970-01-01T00:00:00Z"
 	gitCommit  = "unknown"
-	binaryName = "argocd-image-updater"
+	binaryName = "argocd-resource-tracker"
 )
 
 func Version() string {
