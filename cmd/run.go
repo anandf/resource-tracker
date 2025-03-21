@@ -36,7 +36,11 @@ func newRunCommand() *cobra.Command {
 			)
 			ctx := context.Background()
 			var err error
-
+			level, err := log.ParseLevel(cfg.LogLevel)
+			if err != nil {
+				return fmt.Errorf("failed to parse log level: %w", err)
+			}
+			log.SetLevel(level)
 			resourceTrackerConfig, err := getKubeConfig(ctx, cfg.ArgocdNamespace, kubeConfig)
 			if err != nil {
 				log.Fatalf("could not create K8s client: %v", err)
@@ -45,7 +49,6 @@ func newRunCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-
 			return runResourceTrackerLoop(cfg)
 		},
 	}
@@ -95,7 +98,7 @@ func runResourceTracker(cfg *ResourceTrackerConfig) (argocd.ResourceTrackerResul
 	apps = cfg.ArgoClient.FilterApplicationsByArgoCDNamespace(apps, cfg.ArgocdNamespace)
 
 	if len(apps) == 0 {
-		log.Infof("No applications found in the 'argocd' namespace")
+		log.Warnf("No applications found in namespace '%s'.", cfg.ArgocdNamespace)
 		return result, nil
 	}
 	// Process each application

@@ -42,14 +42,14 @@ func (argocd *argocd) FilterApplicationsByArgoCDNamespace(apps []v1alpha1.Applic
 // Kubernetes based client
 type argocd struct {
 	kubeClient           *kube.KubeClient
-	ApplicationClientSet versioned.Interface
+	applicationClientSet versioned.Interface
 	resourceMapperStore  map[string]*resourcegraph.ResourceMapper
 	repoServer           *repoServerManager
 }
 
 // ListApplications lists all applications across all namespaces.
 func (a *argocd) ListApplications() ([]v1alpha1.Application, error) {
-	list, err := a.ApplicationClientSet.ArgoprojV1alpha1().Applications(v1.NamespaceAll).List(context.TODO(), v1.ListOptions{})
+	list, err := a.applicationClientSet.ArgoprojV1alpha1().Applications(v1.NamespaceAll).List(context.TODO(), v1.ListOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("error listing applications: %w", err)
 	}
@@ -60,7 +60,7 @@ func (a *argocd) ListApplications() ([]v1alpha1.Application, error) {
 // NewK8SClient creates a new kube client to interact with kube api-server.
 func NewArgocd(kubeClient *kube.ResourceTrackerKubeClient, repoServerAddress string, repoServerTimeoutSeconds int, repoServerPlaintext bool, repoServerStrictTLS bool) (ArgoCD, error) {
 	repoServer := NewRepoServerManager(kubeClient.KubeClient.Clientset, kubeClient.KubeClient.Namespace, repoServerAddress, repoServerTimeoutSeconds, repoServerPlaintext, repoServerStrictTLS)
-	return &argocd{kubeClient: kubeClient.KubeClient, ApplicationClientSet: kubeClient.ApplicationClientSet, repoServer: repoServer}, nil
+	return &argocd{kubeClient: kubeClient.KubeClient, applicationClientSet: kubeClient.ApplicationClientSet, repoServer: repoServer}, nil
 }
 
 func (a *argocd) ProcessApplication(app v1alpha1.Application) error {
@@ -72,7 +72,7 @@ func (a *argocd) ProcessApplication(app v1alpha1.Application) error {
 	}
 	resourceRelations := configMap.Data
 	// Fetch AppProject
-	appProject, err := a.ApplicationClientSet.ArgoprojV1alpha1().AppProjects(app.Status.ControllerNamespace).Get(
+	appProject, err := a.applicationClientSet.ArgoprojV1alpha1().AppProjects(app.Status.ControllerNamespace).Get(
 		context.Background(), app.Spec.Project, v1.GetOptions{})
 	if err != nil {
 		return fmt.Errorf("failed to fetch AppProject %s: %w", app.Spec.Project, err)
