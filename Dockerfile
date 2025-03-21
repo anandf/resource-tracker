@@ -9,13 +9,11 @@ WORKDIR /src/argocd-resource-tracker
 # Cache dependencies
 COPY go.mod go.sum ./
 RUN go mod download
-
 # Copy source code
 COPY . .
 
-# Create output directory and build binary
-# Ensure the binary is built statically and for multiple architectures
-RUN CGO_ENABLED=0 GOOS=$(go env GOOS) GOARCH=$(go env GOARCH) go build -ldflags="-w -s" -o dist/argocd-resource-tracker cmd/*.go
+RUN mkdir -p dist && \
+	make build
 
 # Final runtime stage
 FROM alpine:3.21
@@ -23,7 +21,7 @@ FROM alpine:3.21
 # Install necessary dependencies
 RUN apk update && \
     apk upgrade && \
-    apk add --no-cache ca-certificates tini
+    apk add --no-cache tini
 
 # Create necessary directories and user
 RUN mkdir -p /usr/local/bin /app/config && \

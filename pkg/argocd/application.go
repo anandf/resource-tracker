@@ -6,12 +6,10 @@ import (
 
 	"github.com/anandf/resource-tracker/pkg/kube"
 	"github.com/anandf/resource-tracker/pkg/resourcegraph"
-	"github.com/argoproj/argo-cd/v2/common"
 	"github.com/argoproj/argo-cd/v2/pkg/apis/application/v1alpha1"
 	"github.com/argoproj/argo-cd/v2/pkg/client/clientset/versioned"
 	log "github.com/sirupsen/logrus"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/klog/v2"
 )
@@ -60,8 +58,8 @@ func (a *argocd) ListApplications() ([]v1alpha1.Application, error) {
 }
 
 // NewK8SClient creates a new kube client to interact with kube api-server.
-func NewArgocd(kubeClient *kube.ResourceTrackerKubeClient) (ArgoCD, error) {
-	repoServer := NewRepoServerManager(kubeClient.KubeClient.Clientset, kubeClient.KubeClient.Namespace)
+func NewArgocd(kubeClient *kube.ResourceTrackerKubeClient, repoServerAddress string, repoServerTimeoutSeconds int, repoServerPlaintext bool, repoServerStrictTLS bool) (ArgoCD, error) {
+	repoServer := NewRepoServerManager(kubeClient.KubeClient.Clientset, kubeClient.KubeClient.Namespace, repoServerAddress, repoServerTimeoutSeconds, repoServerPlaintext, repoServerStrictTLS)
 	return &argocd{kubeClient: kubeClient.KubeClient, ApplicationClientSet: kubeClient.ApplicationClientSet, repoServer: repoServer}, nil
 }
 
@@ -128,15 +126,4 @@ func (a *argocd) getOrCreateResourceMapper(destinationConfig *rest.Config) (*res
 		a.resourceMapperStore[destinationConfig.ServerName] = mapper
 	}
 	return mapper, nil
-}
-
-func getRepoServerAddress(k8sclient kubernetes.Interface, controllerNamespace string) (string, error) {
-	labelSelector := fmt.Sprintf("%s=%s", common.LabelKeyComponentRepoServer, common.LabelValueComponentRepoServer)
-	serviceList, err := k8sclient.CoreV1().Services(controllerNamespace).List(context.Background(), v1.ListOptions{LabelSelector: labelSelector})
-	if err != nil || len(serviceList.Items) == 0 {
-		return "", fmt.Errorf("failed to find repo server service: %w", err)
-	}
-	repoServerName := serviceList.Items[0].Name
-
-	return fmt.Sprintf("%s.%s.svc.cluster.local:8081", repoServerName, controllerNamespace), nil
 }

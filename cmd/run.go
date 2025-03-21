@@ -3,10 +3,12 @@ package main
 import (
 	"context"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
 	"github.com/anandf/resource-tracker/pkg/argocd"
+	"github.com/argoproj/argo-cd/v2/common"
 	log "github.com/sirupsen/logrus"
 
 	"github.com/anandf/resource-tracker/pkg/env"
@@ -40,7 +42,7 @@ func newRunCommand() *cobra.Command {
 			if err != nil {
 				log.Fatalf("could not create K8s client: %v", err)
 			}
-			cfg.ArgoClient, err = argocd.NewArgocd(resourceTrackerConfig)
+			cfg.ArgoClient, err = argocd.NewArgocd(resourceTrackerConfig, cfg.RepoServerAddress, cfg.RepoServerTimeoutSeconds, cfg.RepoServerPlaintext, cfg.RepoServerStrictTLS)
 			if err != nil {
 				return err
 			}
@@ -49,7 +51,11 @@ func newRunCommand() *cobra.Command {
 		},
 	}
 	runCmd.Flags().DurationVar(&cfg.CheckInterval, "interval", 2*time.Minute, "interval for how often to check for updates")
+	runCmd.Flags().StringVar(&cfg.RepoServerAddress, "repo-server", env.GetStringVal("ARGOCD_REPO_SERVER", common.DefaultRepoServerAddr), "Repo server address.")
 	runCmd.Flags().StringVar(&cfg.LogLevel, "loglevel", env.GetStringVal("RESOURCE_TRACKER_LOGLEVEL", "info"), "set the loglevel to one of trace|debug|info|warn|error")
+	runCmd.Flags().IntVar(&cfg.RepoServerTimeoutSeconds, "repo-server-timeout-seconds", env.ParseNumFromEnv("ARGOCD_APPLICATION_CONTROLLER_REPO_SERVER_TIMEOUT_SECONDS", 60, 0, math.MaxInt64), "Repo server RPC call timeout seconds.")
+	runCmd.Flags().BoolVar(&cfg.RepoServerPlaintext, "repo-server-plaintext", env.GetBoolVal("ARGOCD_APPLICATION_CONTROLLER_REPO_SERVER_PLAINTEXT", false), "Disable TLS on connections to repo server")
+	runCmd.Flags().BoolVar(&cfg.RepoServerStrictTLS, "repo-server-strict-tls", env.GetBoolVal("ARGOCD_APPLICATION_CONTROLLER_REPO_SERVER_STRICT_TLS", false), "Whether to use strict validation of the TLS cert presented by the repo server")
 	runCmd.Flags().StringVar(&kubeConfig, "kubeconfig", "", "full path to kube client configuration, i.e. ~/.kube/config")
 	runCmd.Flags().StringVar(&cfg.ArgocdNamespace, "argocd-namespace", "", "namespace where ArgoCD runs in (current namespace by default)")
 
