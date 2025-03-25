@@ -144,7 +144,6 @@ func getApplicationChildManifests(ctx context.Context, application *appsv1alpha1
 	}
 	targetObjs := make([]*unstructured.Unstructured, 0)
 	for i, source := range sources {
-
 		repo, err := repoServerManager.db.GetRepository(ctx, source.RepoURL, proj.Name)
 		if err != nil {
 			return nil, nil, fmt.Errorf("error fetching repository: %w", err)
@@ -185,6 +184,7 @@ func getApplicationChildManifests(ctx context.Context, application *appsv1alpha1
 	}
 	return targetObjs, cluster.RESTConfig(), nil
 }
+
 func unmarshalManifests(manifests []string) ([]*unstructured.Unstructured, error) {
 	targetObjs := make([]*unstructured.Unstructured, 0)
 	for _, manifest := range manifests {

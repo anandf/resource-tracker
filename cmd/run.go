@@ -98,7 +98,11 @@ func runResourceTracker(cfg *ResourceTrackerConfig) (argocd.ResourceTrackerResul
 	apps = cfg.ArgoClient.FilterApplicationsByArgoCDNamespace(apps, cfg.ArgocdNamespace)
 
 	if len(apps) == 0 {
-		log.Warnf("No applications found in namespace '%s'.", cfg.ArgocdNamespace)
+		if cfg.ArgocdNamespace == "" {
+			log.Warn("No applications found in the current namespace.")
+		} else {
+			log.Warnf("No applications found in namespace '%s'.", cfg.ArgocdNamespace)
+		}
 		return result, nil
 	}
 	// Process each application

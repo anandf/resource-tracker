@@ -6,6 +6,7 @@ import (
 	"sort"
 	"testing"
 
+	"gopkg.in/yaml.v2"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/fake"
@@ -25,7 +26,7 @@ func TestGroupResourcesByAPIGroup(t *testing.T) {
 			},
 			expectedResult: map[string][]string{
 				"apps": {"Deployment", "ReplicaSet"},
-				"core": {"Pod"},
+				"":     {"Pod"},
 			},
 		},
 		{
@@ -36,7 +37,7 @@ func TestGroupResourcesByAPIGroup(t *testing.T) {
 				"apps_Deployment": {"apps_ReplicaSet"},
 			},
 			expectedResult: map[string][]string{
-				"core": {"Node", "Pod", "Container"},
+				"":     {"Node", "Pod", "Container"},
 				"apps": {"Deployment", "ReplicaSet"},
 			},
 		},
@@ -46,7 +47,7 @@ func TestGroupResourcesByAPIGroup(t *testing.T) {
 				"core_Pod": {"core_Container"},
 			},
 			expectedResult: map[string][]string{
-				"core": {"Pod", "Container"},
+				"": {"Pod", "Container"},
 			},
 		},
 		{
@@ -100,10 +101,14 @@ func TestUpdateresourceInclusion(t *testing.T) {
   kinds:
   - Deployment
   - ReplicaSet
+  clusters:
+  - '*'
 - apiGroups:
-  - core
+  - ""
   kinds:
   - Pod
+  clusters:
+  - '*'
 `,
 			},
 			expectError: false,
@@ -168,10 +173,29 @@ func TestUpdateresourceInclusion(t *testing.T) {
 					t.Errorf("Error fetching ConfigMap: %v", err)
 					return
 				}
-				if !reflect.DeepEqual(configMap.Data, tt.expectedData) {
+
+				expectedMap, err := yamlToMap(tt.expectedData["resource.inclusions"])
+				if err != nil {
+					t.Fatalf("Failed to parse expected YAML: %v", err)
+				}
+				actualMap, err := yamlToMap(configMap.Data["resource.inclusions"])
+				if err != nil {
+					t.Fatalf("Failed to parse actual YAML: %v", err)
+				}
+				if !reflect.DeepEqual(actualMap, expectedMap) {
 					t.Errorf("ConfigMap data = %v, expected %v", configMap.Data, tt.expectedData)
 				}
 			}
 		})
 	}
+}
+
+// Convert YAML string to map for comparison
+func yamlToMap(yamlStr string) (map[string]interface{}, error) {
+	var result []map[string]interface{}
+	err := yaml.Unmarshal([]byte(yamlStr), &result)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]interface{}{"resource.inclusions": result}, nil
 }

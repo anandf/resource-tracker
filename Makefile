@@ -61,10 +61,6 @@ image-push: image
 multiarch-image:
 	docker buildx build -t ${IMAGE_NAMESPACE}/${IMAGE_NAME}:${IMAGE_TAG} --progress plain --pull --platform ${RELEASE_IMAGE_PLATFORMS} ${DOCKERX_PUSH} .
 
-.PHONY: run
-run:
-	./${OUTDIR}/${BINNAME}
-
 .PHONY: release-binaries
 release-binaries:
 	BINNAME=argocd-resource-tracker-linux_amd64 OUTDIR=${OUTDIR}/release OS=linux ARCH=amd64 make build
