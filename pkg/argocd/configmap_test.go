@@ -162,7 +162,8 @@ func TestUpdateresourceInclusion(t *testing.T) {
 				}
 				client.CoreV1().ConfigMaps("argocd").Create(context.Background(), configMap, metav1.CreateOptions{})
 			}
-			err := updateresourceInclusion(tt.resourceTree, client, "argocd")
+			groupedResources := groupResourcesByAPIGroup(tt.resourceTree)
+			err := updateresourceInclusion(groupedResources, client, "argocd")
 			if (err != nil) != tt.expectError {
 				t.Errorf("UpdateresourceInclusion() error = %v, expectError %v", err, tt.expectError)
 				return
