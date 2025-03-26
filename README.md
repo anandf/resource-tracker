@@ -6,7 +6,7 @@ Argo CD Resource Tracker is a tool which dynamically updates the resource inclus
 
 ## Problem Statement
 
-ArgoCD’s current implementation watches all resources in the cluster cache, leading to excessive watch connections. In OpenShift or Kubernetes clusters with a large number of CRDs (~200), this results in client-side throttling due to high API server load.
+ArgoCD’s current implementation watches all resources in the cluster cache, leading to excessive watch connections. In Kubernetes clusters with a large number of CRDs (~200), this results in client-side throttling due to high API server load.
 
 Static configuration settings like resource.inclusions and resource.exclusions require users to define which resource types to manage in advance, making it inflexible. This project provides a dynamic solution to watch only resources actively managed by ArgoCD applications.
 
