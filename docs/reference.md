@@ -33,8 +33,7 @@ Default: 2m
 
 **--repo-server**
 
-Repo server address.
-Default: Value from ARGOCD_REPO_SERVER or common.DefaultRepoServerAddr
+Argo CD repo server address. (default "argocd-repo-server:8081")
 
 **--repo-server-timeout-seconds**
 
