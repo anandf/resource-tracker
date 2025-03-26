@@ -11,7 +11,6 @@ import (
 	apiextensionsclient "k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset"
 	apiextensionsinformer "k8s.io/apiextensions-apiserver/pkg/client/informers/externalversions"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/dynamic"
@@ -131,15 +130,12 @@ func (r *ResourceMapper) StartInformer() {
 
 // GetResourcesRelation retrieves a mapping of parent resource kinds to their child resource kinds.
 func (r *ResourceMapper) GetResourcesRelation(ctx context.Context) (map[string]*hashset.Set, error) {
-	childMap := make(map[string][]unstructured.Unstructured)
-	directChildren := hashset.New()
 	resourceRelation := make(map[string]*hashset.Set)
-
 	// Iterate over all API resources
 	for _, value := range r.ResourceList.Values() {
 		gvr, ok := value.(schema.GroupVersionResource)
 		if !ok {
-			log.Errorf("Failed to assert type for gvr: %v", gvr)
+			log.Errorf("Failed to assert type for gvr: %v", value)
 			continue
 		}
 		var continueToken string
@@ -154,12 +150,14 @@ func (r *ResourceMapper) GetResourcesRelation(ctx context.Context) (map[string]*
 			}
 			// Process each resource
 			for _, item := range resourceList.Items {
-				if isDirectChild(item) {
-					directChildren.Add(string(item.GetUID()))
-				}
 				for _, ownerRef := range item.GetOwnerReferences() {
-					parentUID := string(ownerRef.UID)
-					childMap[parentUID] = append(childMap[parentUID], item)
+					parent := kube.GetResourceKey(ownerRef.APIVersion, ownerRef.Kind)
+					child := kube.GetResourceKey(item.GetAPIVersion(), item.GetKind())
+					// Initialize resourceRelation[parent] if not present
+					if _, exists := resourceRelation[parent]; !exists {
+						resourceRelation[parent] = hashset.New()
+					}
+					resourceRelation[parent].Add(child)
 				}
 			}
 			// Check if there are more results to fetch
@@ -169,30 +167,6 @@ func (r *ResourceMapper) GetResourcesRelation(ctx context.Context) (map[string]*
 			}
 		}
 	}
-	// Build final resource relationship map
-	for parentUID, items := range childMap {
-		if directChildren.Contains(parentUID) {
-			for _, item := range items {
-				for _, ownerRef := range item.GetOwnerReferences() {
-					parent := kube.GetResourceKey(ownerRef.APIVersion, ownerRef.Kind)
-					child := kube.GetResourceKey(item.GetAPIVersion(), item.GetKind())
-					// Initialize resourceRelation[parent] if not present
-					if _, exists := resourceRelation[parent]; !exists {
-						resourceRelation[parent] = hashset.New()
-					}
-					if !resourceRelation[parent].Contains(child) {
-						resourceRelation[parent].Add(child)
-					}
-				}
-			}
-		}
-	}
-	return resourceRelation, nil
-}
 
-// Helper to check if an object is a direct child of an application
-func isDirectChild(obj unstructured.Unstructured) bool {
-	annotations := obj.GetAnnotations()
-	_, idExists := annotations["argocd.argoproj.io/tracking-id"]
-	return idExists
+	return resourceRelation, nil
 }
