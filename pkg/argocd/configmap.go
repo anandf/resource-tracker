@@ -27,10 +27,8 @@ type resourceInclusion struct {
 	Clusters  []string `yaml:"clusters"`
 }
 
-func updateresourceInclusion(resourceTree map[string][]string, k8sclient kubernetes.Interface, namespace string) error {
+func updateresourceInclusion(groupedResources map[string][]string, k8sclient kubernetes.Interface, namespace string) error {
 	ctx := context.Background()
-	groupVersion := groupResourcesByAPIGroup(resourceTree)
-	log.Info("groupVersion: ", groupVersion)
 	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		configMap, err := k8sclient.CoreV1().ConfigMaps(namespace).Get(ctx, ARGOCD_CM, v1.GetOptions{})
 		if err != nil {
@@ -58,7 +56,7 @@ func updateresourceInclusion(resourceTree map[string][]string, k8sclient kuberne
 		}
 		changeDetected := false
 		// Compare with groupVersion and update resourceMap
-		for apiGroup, kinds := range groupVersion {
+		for apiGroup, kinds := range groupedResources {
 			if _, exists := resourceMap[apiGroup]; !exists {
 				resourceMap[apiGroup] = hashset.New()
 				changeDetected = true

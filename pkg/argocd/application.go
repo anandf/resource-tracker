@@ -108,7 +108,9 @@ func (a *argocd) ProcessApplication(app v1alpha1.Application) error {
 	}
 	// Discover parent-child relationships
 	parentChildMap := kube.GetResourceRelation(resourceRelations, targetObjs)
-	err = updateresourceInclusion(parentChildMap, a.kubeClient.Clientset, app.Status.ControllerNamespace)
+	groupedResources := groupResourcesByAPIGroup(parentChildMap)
+	log.Infof("Discovered parent-child relationships for application: %s, relationships: %v", app.Name, parentChildMap)
+	err = updateresourceInclusion(groupedResources, a.kubeClient.Clientset, app.Status.ControllerNamespace)
 	if err != nil {
 		return err
 	}
