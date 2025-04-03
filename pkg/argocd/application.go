@@ -63,53 +63,35 @@ func NewArgocd(kubeClient *kube.ResourceTrackerKubeClient, repoServerAddress str
 }
 
 func (a *argocd) ProcessApplication(app v1alpha1.Application) error {
+	ctx := context.Background() // Create a single context for the entire process
 	log.Infof("Processing application: %s", app.Name)
-	// Fetch resource-relation-lookup ConfigMap
-	configMap, err := a.kubeClient.Clientset.CoreV1().ConfigMaps(app.Status.ControllerNamespace).Get(
-		context.Background(), "resource-relation-lookup", v1.GetOptions{})
-	if err != nil {
-		return fmt.Errorf("failed to fetch resource-relation-lookup ConfigMap: %w", err)
-	}
-	resourceRelations := configMap.Data
 	// Fetch AppProject
-	appProject, err := a.applicationClientSet.ArgoprojV1alpha1().AppProjects(app.Status.ControllerNamespace).Get(
-		context.Background(), app.Spec.Project, v1.GetOptions{})
+	appProject, err := a.applicationClientSet.ArgoprojV1alpha1().AppProjects(app.Status.ControllerNamespace).Get(ctx, app.Spec.Project, v1.GetOptions{})
 	if err != nil {
 		return fmt.Errorf("failed to fetch AppProject %s: %w", app.Spec.Project, err)
 	}
 	log.Infof("Fetched AppProject: %s for application: %s", app.Spec.Project, app.Name)
 	// Get target object
-	targetObjs, destinationConfig, err := getApplicationChildManifests(context.Background(), &app, appProject, app.Status.ControllerNamespace, a.repoServer)
+	targetObjs, destinationConfig, err := getApplicationChildManifests(ctx, &app, appProject, app.Status.ControllerNamespace, a.repoServer)
 	if err != nil {
 		return fmt.Errorf("failed to get application child manifests: %w", err)
 	}
 	log.Infof("Fetched target manifests from repo-server for application: %s", app.Name)
-	// Check if all required resources exist in the current resourceRelations map
-	needsUpdate := false
-	for _, obj := range targetObjs {
-		resourceKey := kube.GetResourceKey(obj.GetAPIVersion(), obj.GetKind())
-		if _, exists := resourceRelations[resourceKey]; !exists {
-			needsUpdate = true
-			break
-		}
+	// Get or create resource mapper
+	mapper, err := a.getOrCreateResourceMapper(destinationConfig)
+	if err != nil {
+		return err
 	}
-	log.Infof("Resource relations check completed for application: %s, needs update: %v", app.Name, needsUpdate)
-	// If missing resources are found, update the resource relations
-	if needsUpdate {
-		mapper, err := a.getOrCreateResourceMapper(destinationConfig)
-		if err != nil {
-			return err
-		}
-
-		resourceRelations, err = updateResourceRelationLookup(mapper, app.Status.ControllerNamespace, a.kubeClient.Clientset)
-		if err != nil {
-			return err
-		}
+	// Update resource relation lookup if required
+	resourceRelations, err := updateResourceRelationLookup(mapper, app.Status.ControllerNamespace, a.kubeClient.Clientset)
+	if err != nil {
+		return err
 	}
-	// Discover parent-child relationships
+	// Discover parent-child relationships and group resources
 	parentChildMap := kube.GetResourceRelation(resourceRelations, targetObjs)
 	groupedResources := groupResourcesByAPIGroup(parentChildMap)
 	log.Infof("Discovered parent-child relationships for application: %s, relationships: %v", app.Name, parentChildMap)
+	// Update resource inclusions if required
 	err = updateresourceInclusion(groupedResources, a.kubeClient.Clientset, app.Status.ControllerNamespace)
 	if err != nil {
 		return err

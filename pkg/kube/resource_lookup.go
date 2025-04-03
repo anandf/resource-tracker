@@ -16,6 +16,10 @@ func GetResourceRelation(configMap map[string]string, resources []*unstructured.
 		resourceKey := GetResourceKey(resource.GetAPIVersion(), resource.GetKind())
 		visited := make(map[string]struct{})
 		buildResourceTree(configMap, resourceKey, parentChildMap, visited)
+		// Ensure the resource is added even if it has no children
+		if _, exists := parentChildMap[resourceKey]; !exists {
+			parentChildMap[resourceKey] = []string{} // Add it with an empty child list
+		}
 	}
 	return parentChildMap
 }

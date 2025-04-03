@@ -159,6 +159,32 @@ func (r *ResourceMapper) GetResourcesRelation(ctx context.Context) (map[string]*
 					}
 					resourceRelation[parent].Add(child)
 				}
+				// Special case
+				if item.GetKind() == "ClusterServiceVersion" {
+					parent := kube.GetResourceKey("operators.coreos.com/v1", "OperatorGroup")
+					child := kube.GetResourceKey(item.GetAPIVersion(), item.GetKind())
+					if _, exists := resourceRelation[parent]; !exists {
+						resourceRelation[parent] = hashset.New()
+					}
+					resourceRelation[parent].Add(child)
+				}
+				if item.GetKind() == "Secret" {
+					parent := kube.GetResourceKey("v1", "ServiceAccount")
+					child := kube.GetResourceKey(item.GetAPIVersion(), item.GetKind())
+					if _, exists := resourceRelation[parent]; !exists {
+						resourceRelation[parent] = hashset.New()
+					}
+					resourceRelation[parent].Add(child)
+				}
+				if item.GetKind() == "volumeClaimTemplates" {
+					// add sts as parent
+					parent := kube.GetResourceKey("apps/v1", "StatefulSet")
+					child := kube.GetResourceKey(item.GetAPIVersion(), item.GetKind())
+					if _, exists := resourceRelation[parent]; !exists {
+						resourceRelation[parent] = hashset.New()
+					}
+					resourceRelation[parent].Add(child)
+				}
 			}
 			// Check if there are more results to fetch
 			continueToken = resourceList.GetContinue()

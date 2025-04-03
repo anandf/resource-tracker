@@ -34,7 +34,7 @@ spec:
     spec:
       containers:
       - name: argocd-resource-tracker
-        image: quay.io/mangaal/argocd-resource-tracker:rc-v1@sha256:2dc618337d0bb6e35143e7542b5a9bc7273a840ad500991cb864d0aae8ea20c0
+        image: quay.io/mangaal/argocd-resource-tracker:rc-v1@sha256:fdd200ba3b2c0429fafed6fd470a27356253506bac506de6e395287031ddf35d
         imagePullPolicy: Always
         args: 
         - run

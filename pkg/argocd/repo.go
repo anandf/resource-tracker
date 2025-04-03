@@ -3,7 +3,6 @@ package argocd
 import (
 	"context"
 	"fmt"
-	"log"
 
 	"github.com/argoproj/argo-cd/v2/common"
 	appsv1alpha1 "github.com/argoproj/argo-cd/v2/pkg/apis/application/v1alpha1"
@@ -16,6 +15,7 @@ import (
 	"github.com/argoproj/argo-cd/v2/util/settings"
 	"github.com/argoproj/argo-cd/v2/util/tls"
 	"github.com/argoproj/gitops-engine/pkg/utils/kube"
+	log "github.com/sirupsen/logrus"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
@@ -181,6 +181,7 @@ func getApplicationChildManifests(ctx context.Context, application *appsv1alpha1
 			return nil, nil, fmt.Errorf("error unmarshalling manifests: %w", err)
 		}
 		targetObjs = append(targetObjs, targetObj...)
+		log.Debugf("Successfully fetched %v target manifest(s) from repo-server for application: %s. Manifests: %v", len(manifestInfo.Manifests), application.Name, manifestInfo.Manifests)
 	}
 	return targetObjs, cluster.RESTConfig(), nil
 }

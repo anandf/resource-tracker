@@ -3,6 +3,8 @@ package argocd
 import (
 	"context"
 	"fmt"
+	"reflect"
+	"sort"
 	"strings"
 
 	"maps"
@@ -139,11 +141,13 @@ func groupResourcesByAPIGroup(resourceTree map[string][]string) map[string][]str
 
 func updateResourceRelationLookup(resourcemapper *resourcegraph.ResourceMapper, namespace string, k8sclient kubernetes.Interface) (map[string]string, error) {
 	ctx := context.Background()
+	// Retrieve the resource relation data
 	resourcesRelation, err := resourcemapper.GetResourcesRelation(ctx)
 	if err != nil {
 		log.Errorf("failed to update resource-relation-lookup ConfigMap: %v", err)
 		return nil, err
 	}
+	// Build a new map with sorted values for deterministic ordering
 	convertedResourcesRelation := make(map[string]string)
 	for k, v := range resourcesRelation {
 		values := v.Values() // Avoid multiple calls
@@ -151,11 +155,13 @@ func updateResourceRelationLookup(resourcemapper *resourcegraph.ResourceMapper, 
 		for i, val := range values {
 			strValues[i] = val.(string)
 		}
+		// Sort to ensure the same order every time
+		sort.Strings(strValues)
 		convertedResourcesRelation[k] = strings.Join(strValues, ",")
 	}
 	// Use retry logic to handle update conflicts
 	err = retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		// Fetch the latest version inside the retry loop to avoid stale reads
+		// Fetch the latest version to avoid stale reads
 		configMap, err := k8sclient.CoreV1().ConfigMaps(namespace).Get(ctx, RESOURCE_RELATION_LOOKUP, v1.GetOptions{})
 		if err != nil {
 			return fmt.Errorf("failed to fetch ConfigMap for update: %v", err)
@@ -163,18 +169,25 @@ func updateResourceRelationLookup(resourcemapper *resourcegraph.ResourceMapper, 
 		if configMap.Data == nil {
 			configMap.Data = make(map[string]string)
 		}
+		// Compare the existing data with the new data.
+		// This avoids an update if nothing has changed.
+		if reflect.DeepEqual(configMap.Data, convertedResourcesRelation) {
+			log.Infof("No changes detected in resource-relation-lookup ConfigMap. Update not required.")
+			return nil
+		}
+		// Update the ConfigMap with the new data
 		maps.Copy(configMap.Data, convertedResourcesRelation)
 		_, err = k8sclient.CoreV1().ConfigMaps(namespace).Update(ctx, configMap, v1.UpdateOptions{})
 		if err != nil {
 			log.Warnf("Retrying due to conflict: %v", err)
 			return err
 		}
+		log.Infof("Resource Relations updated successfully in resource-relation-lookup ConfigMap.")
 		return nil
 	})
 	if err != nil {
 		log.Errorf("Final failure updating ConfigMap: %v", err)
 		return nil, err
 	}
-	log.Infof("Resource Relations updated successfully in resource-relation-lookup ConfigMap.")
 	return convertedResourcesRelation, nil
 }
