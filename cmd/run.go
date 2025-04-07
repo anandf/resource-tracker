@@ -68,12 +68,7 @@ func runResourceTrackerLoop(cfg *ResourceTrackerConfig) error {
 	lastRun := time.Time{}
 	for {
 		if lastRun.IsZero() || time.Since(lastRun) > cfg.CheckInterval {
-			result, err := runResourceTracker(cfg)
-			if err != nil {
-				log.Errorf("Error updating applications: %v", err)
-			} else {
-				log.Infof("Resource Tracker Loop: Processed %d applications with %d errors", result.NumApplicationsProcessed, result.NumErrors)
-			}
+			runResourceTracker(cfg)
 			lastRun = time.Now()
 		}
 		if cfg.CheckInterval == 0 {
@@ -85,37 +80,35 @@ func runResourceTrackerLoop(cfg *ResourceTrackerConfig) error {
 }
 
 // Main loop for resource-tracker
-func runResourceTracker(cfg *ResourceTrackerConfig) (argocd.ResourceTrackerResult, error) {
-	result := argocd.ResourceTrackerResult{}
-	var err error
-	var errorList []error
+func runResourceTracker(cfg *ResourceTrackerConfig) {
+	log.Info("Starting resource tracking process...")
+	// Fetch all applications
+	log.Debug("Fetching all applications from ArgoCD...")
 	apps, err := cfg.ArgoClient.ListApplications()
 	if err != nil {
-		return result, fmt.Errorf("error while listing applications: %w", err)
+		log.Fatalf("Error while listing applications: %v", err)
 	}
-
-	// Filter applications belonging to the 'argocd' namespace
+	// Filter applications in the specified Argo CD namespace
 	apps = cfg.ArgoClient.FilterApplicationsByArgoCDNamespace(apps, cfg.ArgocdNamespace)
-
+	totalApps := len(apps)
 	if len(apps) == 0 {
-		if cfg.ArgocdNamespace == "" {
-			log.Warn("No applications found in the current namespace.")
-		} else {
-			log.Warnf("No applications found in namespace '%s'.", cfg.ArgocdNamespace)
-		}
-		return result, nil
+		log.Warn("No applications found in namespace.")
+		return
 	}
-	// Process each application
-	for _, app := range apps {
-		err := cfg.ArgoClient.ProcessApplication(app)
-		if err != nil {
-			result.NumErrors++
-			errorList = append(errorList, fmt.Errorf("application %s: %w", app.Name, err))
-		}
-		result.NumApplicationsProcessed++
-	}
+	log.Infof("Fetched %d applications from ArgoCD.", totalApps)
+	// Process all applications
+	errorList := cfg.ArgoClient.ProcessApplication(apps, cfg.ArgocdNamespace)
+	// Calculate successfully processed applications
+	successfulApps := totalApps - len(errorList)
+	log.Infof("Processed %d out of %d applications successfully.", successfulApps, totalApps)
+	// Log all individual errors separately
 	if len(errorList) > 0 {
-		return result, fmt.Errorf("encountered errors: %v", errorList)
+		log.Warnf("Encountered %d errors while processing applications.", len(errorList))
+		for _, appErr := range errorList {
+			log.Errorf("Application processing error: %v", appErr)
+		}
+	} else {
+		log.Info("All applications processed successfully without errors.")
 	}
-	return result, nil
+	log.Info("Resource tracking process completed.")
 }
