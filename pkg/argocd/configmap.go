@@ -139,7 +139,7 @@ func groupResourcesByAPIGroup(resourceTree map[string][]string) map[string][]str
 	return result
 }
 
-func updateResourceRelationLookup(resourcemapper *resourcegraph.ResourceMapper, namespace string, k8sclient kubernetes.Interface) (map[string]string, error) {
+func updateResourceRelationLookup(resourcemapper *resourcegraph.ResourceMapper, namespace string, k8sclient kubernetes.Interface, appName string) (map[string]string, error) {
 	ctx := context.Background()
 	// Retrieve the resource relation data
 	resourcesRelation, err := resourcemapper.GetResourcesRelation(ctx)
@@ -172,7 +172,7 @@ func updateResourceRelationLookup(resourcemapper *resourcegraph.ResourceMapper, 
 		// Compare the existing data with the new data.
 		// This avoids an update if nothing has changed.
 		if reflect.DeepEqual(configMap.Data, convertedResourcesRelation) {
-			log.Infof("No changes detected in resource-relation-lookup ConfigMap. Update not required.")
+			log.Infof("No changes detected in resource-relation-lookup ConfigMap for app: %s. Update not required.", appName)
 			return nil
 		}
 		// Update the ConfigMap with the new data
@@ -182,7 +182,7 @@ func updateResourceRelationLookup(resourcemapper *resourcegraph.ResourceMapper, 
 			log.Warnf("Retrying due to conflict: %v", err)
 			return err
 		}
-		log.Infof("Resource Relations updated successfully in resource-relation-lookup ConfigMap.")
+		log.Infof("Resource Relations updated successfully in resource-relation-lookup ConfigMap for app: %s.", appName)
 		return nil
 	})
 	if err != nil {
