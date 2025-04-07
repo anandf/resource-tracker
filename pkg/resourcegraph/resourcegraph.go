@@ -3,6 +3,7 @@ package resourcegraph
 import (
 	"context"
 	"fmt"
+	"reflect"
 
 	"github.com/anandf/resource-tracker/pkg/kube"
 	"github.com/emirpasic/gods/sets/hashset"
@@ -64,6 +65,17 @@ func NewResourceMapper(destinationConfig *rest.Config) (*ResourceMapper, error) 
 	crdInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: rm.addToResourceList,
 		UpdateFunc: func(oldObj, newObj interface{}) {
+			oldCRD, ok1 := oldObj.(*apiextensionsv1.CustomResourceDefinition)
+			newCRD, ok2 := newObj.(*apiextensionsv1.CustomResourceDefinition)
+			if !ok1 || !ok2 {
+				log.Errorf("Failed to convert objects to CRD")
+				return
+			}
+			// Compare the spec fields before reprocessing
+			if reflect.DeepEqual(oldCRD.Spec, newCRD.Spec) {
+				log.Debugf("CRD %s update ignored as there is no spec change", newCRD.Name)
+				return
+			}
 			rm.addToResourceList(newObj)
 		},
 	})
@@ -87,10 +99,14 @@ func (r *ResourceMapper) addToResourceList(obj interface{}) {
 			Version:  version.Name,
 			Resource: crd.Spec.Names.Plural, // CRD resources are named using the `plural` field
 		}
-
+		// Log whether we're updating or adding a new CRD version
+		if r.ResourceList.Contains(gvr) {
+			log.Debugf("Updating existing CRD version: %s/%s (%s)", gvr.Group, gvr.Version, gvr.Resource)
+		} else {
+			log.Infof("Adding new CRD version: %s/%s (%s)", gvr.Group, gvr.Version, gvr.Resource)
+		}
 		// Add the served version of CRD to ResourceList
 		r.ResourceList.Add(gvr)
-		log.Infof("New CRD version added: %s/%s (%s)", gvr.Group, gvr.Version, gvr.Resource)
 	}
 }
 
