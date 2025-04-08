@@ -16,7 +16,7 @@ func TestNewRunCommand(t *testing.T) {
 	asser.Greater(len(runCmd.Short), 25)
 	asser.NotNil(runCmd.RunE)
 	asser.Equal("2m0s", runCmd.Flag("interval").Value.String())
-	asser.Equal(env.GetStringVal("IMAGE_UPDATER_LOGLEVEL", "info"), runCmd.Flag("loglevel").Value.String())
+	asser.Equal(env.GetStringVal("RESOURCE_TRACKER_LOGLEVEL", "info"), runCmd.Flag("loglevel").Value.String())
 	asser.Equal("", runCmd.Flag("kubeconfig").Value.String())
 	asser.Equal("", runCmd.Flag("argocd-namespace").Value.String())
 	asser.Nil(runCmd.Help())

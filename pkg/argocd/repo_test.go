@@ -44,7 +44,7 @@ func TestGetApplicationChildManifests(t *testing.T) {
 			Name:      "argocd-cm",
 			Namespace: "test-argocd",
 			Labels: map[string]string{
-				"app.kube.io/part-of": "argocd",
+				"app.kubernetes.io/part-of": "argocd",
 			},
 		},
 		Data: make(map[string]string),
@@ -62,7 +62,6 @@ func TestGetApplicationChildManifests(t *testing.T) {
 		settingsManager := settings.NewSettingsManager(ctx, kubeClient, "test-argocd")
 		mockRepoClient := mockrepoclient.RepoServerServiceClient{}
 		mockRepoClientset := mockrepoclient.Clientset{RepoServerServiceClient: &mockRepoClient}
-
 		db.On("ListHelmRepositories", ctx).Return([]*v1alpha1.Repository{}, nil)
 		db.On("GetAllHelmRepositoryCredentials", ctx).Return([]*v1alpha1.RepoCreds{}, nil)
 		db.On("GetCluster", ctx, mock.Anything).Return(&v1alpha1.Cluster{}, nil)

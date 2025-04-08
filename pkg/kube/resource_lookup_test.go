@@ -117,3 +117,44 @@ func TestBuildResourceTree(t *testing.T) {
 		})
 	}
 }
+func TestGetResourceKey(t *testing.T) {
+	tests := []struct {
+		name         string
+		groupVersion string
+		kind         string
+		expectedKey  string
+	}{
+		{
+			name:         "group and version present",
+			groupVersion: "apps/v1",
+			kind:         "Deployment",
+			expectedKey:  "apps_Deployment",
+		},
+		{
+			name:         "only version present (core group)",
+			groupVersion: "v1",
+			kind:         "Pod",
+			expectedKey:  "core_Pod",
+		},
+		{
+			name:         "empty groupVersion (defaults to core)",
+			groupVersion: "",
+			kind:         "Service",
+			expectedKey:  "core_Service",
+		},
+		{
+			name:         "group without version",
+			groupVersion: "batch",
+			kind:         "Job",
+			expectedKey:  "core_Job",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := GetResourceKey(tt.groupVersion, tt.kind)
+			if result != tt.expectedKey {
+				t.Errorf("GetResourceKey(%q, %q) = %v, expected %v", tt.groupVersion, tt.kind, result, tt.expectedKey)
+			}
+		})
+	}
+}

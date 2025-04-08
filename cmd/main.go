@@ -10,10 +10,14 @@ import (
 
 // ResourceTrackerConfig contains global configuration and required runtime data
 type ResourceTrackerConfig struct {
-	ArgocdNamespace string
-	CheckInterval   time.Duration
-	ArgoClient      argocd.ArgoCD
-	LogLevel        string
+	ArgocdNamespace          string
+	CheckInterval            time.Duration
+	ArgoClient               argocd.ArgoCD
+	LogLevel                 string
+	RepoServerAddress        string
+	RepoServerPlaintext      bool
+	RepoServerStrictTLS      bool
+	RepoServerTimeoutSeconds int
 }
 
 // newRootCommand implements the root command of argocd-resource-tracker
