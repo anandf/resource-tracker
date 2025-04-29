@@ -1,6 +1,6 @@
 image:
   repository: quay.io/mangaal/argocd-resource-tracker
-  tag: rc-v1@sha256:74862a3a420b3c8271ce7ebd8fa1a1cc441be82293251e60b92caeee25b6c37b
+  tag: test-v1@sha256:5cb7b7c91a2d0e09e9ac9555cb897ee3e83120e90bf01bb9f66e950b6ea417c2
   pullPolicy: Always
 
 replicaCount: 1
