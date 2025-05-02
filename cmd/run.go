@@ -4,10 +4,13 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/anandf/resource-tracker/pkg/argocd"
 	"github.com/argoproj/argo-cd/v2/common"
+	"github.com/argoproj/argo-cd/v2/pkg/apis/application/v1alpha1"
+	"github.com/emirpasic/gods/sets/hashset"
 	log "github.com/sirupsen/logrus"
 
 	"github.com/anandf/resource-tracker/pkg/env"
@@ -78,37 +81,63 @@ func runResourceTrackerLoop(cfg *ResourceTrackerConfig) error {
 	}
 	return nil
 }
-
-// Main loop for resource-tracker
 func runResourceTracker(cfg *ResourceTrackerConfig) {
 	log.Info("Starting resource tracking process...")
-	// Fetch all applications
-	log.Debug("Fetching all applications from ArgoCD...")
 	apps, err := cfg.ArgoClient.ListApplications()
 	if err != nil {
 		log.Fatalf("Error while listing applications: %v", err)
 	}
-	// Filter applications in the specified Argo CD namespace
 	apps = cfg.ArgoClient.FilterApplicationsByArgoCDNamespace(apps, cfg.ArgocdNamespace)
-	totalApps := len(apps)
 	if len(apps) == 0 {
-		log.Warn("No applications found in namespace.")
+		log.Warn("No applications found.")
 		return
 	}
-	log.Infof("Fetched %d applications from ArgoCD.", totalApps)
-	// Process all applications
-	errorList := cfg.ArgoClient.ProcessApplication(apps, cfg.ArgocdNamespace)
-	// Calculate successfully processed applications
-	successfulApps := totalApps - len(errorList)
-	log.Infof("Processed %d out of %d applications successfully.", successfulApps, totalApps)
-	// Log all individual errors separately
-	if len(errorList) > 0 {
-		log.Warnf("Encountered %d errors while processing applications.", len(errorList))
-		for _, appErr := range errorList {
-			log.Errorf("Application processing error: %v", appErr)
-		}
-	} else {
-		log.Info("All applications processed successfully without errors.")
+	log.Infof("Fetched %d applications", len(apps))
+	resourceChan := make(chan map[string]*hashset.Set)
+	errChan := make(chan error)
+	// Launch consumer (Tracker)
+	go startResourceTrackerConsumer(cfg, resourceChan)
+	var wg sync.WaitGroup
+	for _, app := range apps {
+		wg.Add(1)
+		go func(app v1alpha1.Application) {
+			defer wg.Done()
+			appGroupedResources, err := cfg.ArgoClient.ProcessApplication(app, cfg.ArgocdNamespace)
+			if err != nil {
+				errChan <- err
+				return
+			}
+			if appGroupedResources != nil {
+				resourceChan <- appGroupedResources
+			}
+		}(app)
 	}
-	log.Info("Resource tracking process completed.")
+
+	// Close channels after all apps processed
+	go func() {
+		wg.Wait()
+		close(resourceChan)
+	}()
+
+	// Handle processing errors
+	go func() {
+		for err := range errChan {
+			log.Errorf("Error processing application: %v", err)
+		}
+	}()
+	log.Info("Resource tracking initiated for all applications.")
+}
+
+func startResourceTrackerConsumer(cfg *ResourceTrackerConfig, resourceChan <-chan map[string]*hashset.Set) {
+	// Process resources from the channel
+	// and update the tracked resources in the config
+	// This is a blocking call, so it will keep running until the channel is closed
+	for groupedResources := range resourceChan {
+		cfg.ArgoClient.PopulateTrackedResources(groupedResources)
+		err := cfg.ArgoClient.UpdateResourceInclusion(cfg.ArgocdNamespace)
+		if err != nil {
+			log.Errorf("Error updating resource inclusion: %v", err)
+		}
+	}
+	log.Info("Resource channel has been closed. Resource Tracker process has completed successfully.")
 }

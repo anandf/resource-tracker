@@ -42,6 +42,37 @@ metadata:
 
 * Once new relationships are identified, they are added to the ConfigMap to ensure that subsequent applications do not need to query the API server again, reducing API load and improving performance.
 
+### Cluster-wide Inclusion Pattern
+To ensure Argo CD watches all relevant resources across multiple clusters, the clusters: ['*'] wildcard is used in the resource.inclusions setting:
+```
+- apiGroups:
+  - apps
+  kinds:
+  - ReplicaSet
+  - Deployment
+  clusters:
+  - '*'
+
+```
+This wildcard enables inclusion settings to apply globally across all clusters managed by Argo CD. Due to the ConfigMap size limitation (1MB), defining inclusion rules per cluster individually is not scalable. Using the wildcard reduces redundancy and keeps the configuration compact.
+
+***Trade-off:***
+
+While this ensures that all necessary resources managed by Argo CD are watched, it may also include a few unrelated resources in clusters where those relationships don’t exist.
+
+**Example:**
+
+**In Cluster A:**
+- **Resource Kind:** `Deployment`
+  - **Children:** `ReplicaSets`, `Services`
+
+**In Cluster B:**
+- **Resource Kind:** `Deployment`
+  - **Children:** `ReplicaSets`, `Services`, `Secrets`
+
+Since resource relationships can differ across clusters, using `clusters: ['*']` ensures that all possible resource relationships are covered, even when they vary across clusters, without the need for maintaining separate configurations for each cluster.
+
+
 For detailed configuration options and command-line parameters, please refer to the  
 [Configuration and Command Line Reference](./reference.md).
 

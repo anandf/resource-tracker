@@ -1,0 +1,19 @@
+image:
+  repository: quay.io/mangaal/argocd-resource-tracker
+  tag: test-v1@sha256:5cb7b7c91a2d0e09e9ac9555cb897ee3e83120e90bf01bb9f66e950b6ea417c2
+  pullPolicy: Always
+
+replicaCount: 1
+
+serviceAccount:
+  name: argocd-resource-tracker-controller
+
+resources:
+  limits:
+    cpu: 500m
+    memory: 512Mi
+  requests:
+    cpu: 250m
+    memory: 256Mi
+
+namespace: argocd

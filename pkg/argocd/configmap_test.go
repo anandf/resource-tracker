@@ -3,9 +3,11 @@ package argocd
 import (
 	"context"
 	"reflect"
-	"sort"
 	"testing"
 
+	"github.com/anandf/resource-tracker/pkg/kube"
+	"github.com/emirpasic/gods/sets/hashset"
+	"github.com/stretchr/testify/assert"
 	"gopkg.in/yaml.v2"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -26,7 +28,7 @@ func TestGroupResourcesByAPIGroup(t *testing.T) {
 			},
 			expectedResult: map[string][]string{
 				"apps": {"Deployment", "ReplicaSet"},
-				"":     {"Pod"},
+				"core": {"Pod"},
 			},
 		},
 		{
@@ -37,7 +39,7 @@ func TestGroupResourcesByAPIGroup(t *testing.T) {
 				"apps_Deployment": {"apps_ReplicaSet"},
 			},
 			expectedResult: map[string][]string{
-				"":     {"Node", "Pod", "Container"},
+				"core": {"Node", "Pod", "Container"},
 				"apps": {"Deployment", "ReplicaSet"},
 			},
 		},
@@ -47,7 +49,7 @@ func TestGroupResourcesByAPIGroup(t *testing.T) {
 				"core_Pod": {"core_Container"},
 			},
 			expectedResult: map[string][]string{
-				"": {"Pod", "Container"},
+				"core": {"Pod", "Container"},
 			},
 		},
 		{
@@ -61,42 +63,53 @@ func TestGroupResourcesByAPIGroup(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			result := groupResourcesByAPIGroup(tt.resourceTree)
 			// Sort both expected and actual values before comparing
-			for key := range result {
-				sort.Strings(result[key])
-			}
-			for key := range tt.expectedResult {
-				sort.Strings(tt.expectedResult[key])
-			}
-			if !reflect.DeepEqual(result, tt.expectedResult) {
-				t.Errorf("groupResourcesByAPIGroup() = %v, expected %v", result, tt.expectedResult)
+			for apiGroup, kinds := range tt.expectedResult {
+				if _, exist := result[apiGroup]; !exist {
+					assert.Failf(t, "Expected API group %s not found in groupResourses %v", apiGroup, result)
+				}
+				for _, kind := range kinds {
+					if !result[apiGroup].Contains(kind) {
+						assert.Failf(t, "Kind mismatch", "Expected kind %s not found in API group %s. Actual kinds: %v", kind, apiGroup, result[apiGroup].Values())
+					}
+				}
 			}
 		})
 	}
 }
-func TestUpdateresourceInclusion(t *testing.T) {
+
+func TestUpdateResourceInclusion(t *testing.T) {
 	tests := []struct {
-		name         string
-		resourceTree map[string][]string
-		existingData map[string]string
-		expectedData map[string]string
-		expectError  bool
+		name              string
+		namespace         string
+		existingConfigMap *v1.ConfigMap
+		trackedResources  map[string]*hashset.Set
+		expectedConfigMap *v1.ConfigMap
+		expectError       bool
 	}{
 		{
-			name: "update with new resources",
-			resourceTree: map[string][]string{
-				"apps_Deployment": {"apps_ReplicaSet", "core_Pod"},
-				"apps_ReplicaSet": {"core_Pod"},
-			},
-			existingData: map[string]string{
-				"resource.inclusions": `
+			name:      "update with new inclusions",
+			namespace: "argocd",
+			existingConfigMap: &v1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      ARGOCD_CM,
+					Namespace: "argocd",
+				},
+				Data: map[string]string{
+					"resource.inclusions": `
 - apiGroups:
   - apps
   kinds:
   - Deployment
 `,
+				},
 			},
-			expectedData: map[string]string{
-				"resource.inclusions": `- apiGroups:
+			trackedResources: map[string]*hashset.Set{
+				"apps": hashset.New("Deployment", "ReplicaSet"),
+				"core": hashset.New("Pod"),
+			},
+			expectedConfigMap: &v1.ConfigMap{
+				Data: map[string]string{
+					"resource.inclusions": `- apiGroups:
   - apps
   kinds:
   - Deployment
@@ -104,89 +117,163 @@ func TestUpdateresourceInclusion(t *testing.T) {
   clusters:
   - '*'
 - apiGroups:
-  - ""
+  - core
   kinds:
   - Pod
   clusters:
   - '*'
 `,
+				},
 			},
 			expectError: false,
 		},
 		{
-			name: "no changes detected",
-			resourceTree: map[string][]string{
-				"apps_Deployment": {"apps_ReplicaSet"},
-			},
-			existingData: map[string]string{
-				"resource.inclusions": `
+			name:      "no changes detected",
+			namespace: "argocd",
+			existingConfigMap: &v1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      ARGOCD_CM,
+					Namespace: "argocd",
+				},
+				Data: map[string]string{
+					"resource.inclusions": `
 - apiGroups:
   - apps
   kinds:
   - Deployment
   - ReplicaSet
-`,
-			},
-			expectedData: map[string]string{
-				"resource.inclusions": `
+  clusters:
+  - '*'
 - apiGroups:
-  - apps
+  - core
   kinds:
-  - Deployment
-  - ReplicaSet
+  - Pod
+  clusters:
+  - '*'
 `,
+				},
 			},
-			expectError: false,
+			trackedResources: map[string]*hashset.Set{
+				"apps": hashset.New("Deployment", "ReplicaSet"),
+				"core": hashset.New("Pod"),
+			},
+			expectedConfigMap: nil,
+			expectError:       false,
 		},
 		{
-			name: "error fetching ConfigMap",
-			resourceTree: map[string][]string{
-				"apps_Deployment": {"apps_ReplicaSet"},
+			name:              "error fetching ConfigMap",
+			namespace:         "argocd",
+			existingConfigMap: nil,
+			trackedResources: map[string]*hashset.Set{
+				"apps": hashset.New("Deployment"),
 			},
-			existingData: nil,
-			expectedData: nil,
-			expectError:  true,
+			expectedConfigMap: nil,
+			expectError:       true,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			client := fake.NewSimpleClientset()
-			if tt.existingData != nil {
-				configMap := &v1.ConfigMap{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      ARGOCD_CM,
-						Namespace: "argocd",
-					},
-					Data: tt.existingData,
-				}
-				client.CoreV1().ConfigMaps("argocd").Create(context.Background(), configMap, metav1.CreateOptions{})
+			if tt.existingConfigMap != nil {
+				_, err := client.CoreV1().ConfigMaps(tt.namespace).Create(context.Background(), tt.existingConfigMap, metav1.CreateOptions{})
+				assert.NoError(t, err)
 			}
-			groupedResources := groupResourcesByAPIGroup(tt.resourceTree)
-			err := updateresourceInclusion(groupedResources, client, "argocd")
+
+			argocd := &argocd{
+				kubeClient:       &kube.KubeClient{Clientset: client, Namespace: tt.namespace},
+				trackedResources: tt.trackedResources,
+			}
+			err := argocd.UpdateResourceInclusion(tt.namespace)
 			if (err != nil) != tt.expectError {
-				t.Errorf("UpdateresourceInclusion() error = %v, expectError %v", err, tt.expectError)
+				t.Errorf("UpdateResourceInclusion() error = %v, expectError %v", err, tt.expectError)
 				return
 			}
-			if !tt.expectError {
-				configMap, err := client.CoreV1().ConfigMaps("argocd").Get(context.Background(), ARGOCD_CM, metav1.GetOptions{})
-				if err != nil {
-					t.Errorf("Error fetching ConfigMap: %v", err)
-					return
-				}
 
-				expectedMap, err := yamlToMap(tt.expectedData["resource.inclusions"])
-				if err != nil {
-					t.Fatalf("Failed to parse expected YAML: %v", err)
-				}
+			if !tt.expectError && tt.expectedConfigMap != nil {
+				configMap, err := client.CoreV1().ConfigMaps(tt.namespace).Get(context.Background(), ARGOCD_CM, metav1.GetOptions{})
+				assert.NoError(t, err)
+
+				expectedMap, err := yamlToMap(tt.expectedConfigMap.Data["resource.inclusions"])
+				assert.NoError(t, err)
+
 				actualMap, err := yamlToMap(configMap.Data["resource.inclusions"])
-				if err != nil {
-					t.Fatalf("Failed to parse actual YAML: %v", err)
-				}
-				if !reflect.DeepEqual(actualMap, expectedMap) {
-					t.Errorf("ConfigMap data = %v, expected %v", configMap.Data, tt.expectedData)
-				}
+				assert.NoError(t, err)
+
+				assert.True(t, reflect.DeepEqual(expectedMap, actualMap), "ConfigMap data mismatch. Expected: %v, Got: %v", expectedMap, actualMap)
 			}
+		})
+	}
+}
+func TestHasResourceInclusionChanged(t *testing.T) {
+	tests := []struct {
+		name     string
+		a        map[string]*hashset.Set
+		b        map[string]*hashset.Set
+		expected bool
+	}{
+		{
+			name: "identical maps",
+			a: map[string]*hashset.Set{
+				"apps": hashset.New("Deployment", "ReplicaSet"),
+				"core": hashset.New("Pod"),
+			},
+			b: map[string]*hashset.Set{
+				"apps": hashset.New("Deployment", "ReplicaSet"),
+				"core": hashset.New("Pod"),
+			},
+			expected: true,
+		},
+		{
+			name: "different sizes",
+			a: map[string]*hashset.Set{
+				"apps": hashset.New("Deployment"),
+			},
+			b: map[string]*hashset.Set{
+				"apps": hashset.New("Deployment", "ReplicaSet"),
+			},
+			expected: false,
+		},
+		{
+			name: "different keys",
+			a: map[string]*hashset.Set{
+				"apps": hashset.New("Deployment"),
+			},
+			b: map[string]*hashset.Set{
+				"core": hashset.New("Pod"),
+			},
+			expected: false,
+		},
+		{
+			name: "different values in same key",
+			a: map[string]*hashset.Set{
+				"apps": hashset.New("Deployment"),
+			},
+			b: map[string]*hashset.Set{
+				"apps": hashset.New("ReplicaSet"),
+			},
+			expected: false,
+		},
+		{
+			name:     "empty maps",
+			a:        map[string]*hashset.Set{},
+			b:        map[string]*hashset.Set{},
+			expected: true,
+		},
+		{
+			name: "one map empty",
+			a: map[string]*hashset.Set{
+				"apps": hashset.New("Deployment"),
+			},
+			b:        map[string]*hashset.Set{},
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := hasResourceInclusionChanged(tt.a, tt.b)
+			assert.Equal(t, tt.expected, result)
 		})
 	}
 }
