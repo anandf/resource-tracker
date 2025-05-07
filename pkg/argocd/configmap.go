@@ -3,17 +3,17 @@ package argocd
 import (
 	"context"
 	"fmt"
+	"reflect"
+	"sort"
 	"strings"
 
 	"maps"
 
-	"github.com/anandf/resource-tracker/pkg/resourcegraph"
 	"github.com/emirpasic/gods/sets/hashset"
+	log "github.com/sirupsen/logrus"
 	"gopkg.in/yaml.v2"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/util/retry"
-	"k8s.io/klog/v2"
 )
 
 const (
@@ -27,13 +27,13 @@ type resourceInclusion struct {
 	Clusters  []string `yaml:"clusters"`
 }
 
-func updateresourceInclusion(resourceTree map[string][]string, k8sclient kubernetes.Interface, namespace string) error {
+func (a *argocd) UpdateResourceInclusion(namespace string) error {
 	ctx := context.Background()
-
-	groupVersion := groupResourcesByAPIGroup(resourceTree)
-
+	if namespace == "" {
+		namespace = a.kubeClient.Namespace
+	}
 	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		configMap, err := k8sclient.CoreV1().ConfigMaps(namespace).Get(ctx, ARGOCD_CM, v1.GetOptions{})
+		configMap, err := a.kubeClient.Clientset.CoreV1().ConfigMaps(namespace).Get(ctx, ARGOCD_CM, v1.GetOptions{})
 		if err != nil {
 			return fmt.Errorf("error fetching ConfigMap: %v", err)
 		}
@@ -43,42 +43,34 @@ func updateresourceInclusion(resourceTree map[string][]string, k8sclient kuberne
 				return fmt.Errorf("error unmarshalling existing resource inclusions from YAML: %v", err)
 			}
 		}
-		resourceMap := make(map[string]*hashset.Set)
-		// Populate resourceMap from existing resource inclusions
+		// Convert existingresourceInclusions into a map
+		existingMap := make(map[string]*hashset.Set)
+		changeDetected := false
 		for _, inclusion := range existingresourceInclusions {
 			if len(inclusion.APIGroups) == 0 {
 				continue
 			}
 			apiGroup := inclusion.APIGroups[0]
-			if _, found := resourceMap[apiGroup]; !found {
-				resourceMap[apiGroup] = hashset.New()
+			if _, found := existingMap[apiGroup]; !found {
+				existingMap[apiGroup] = hashset.New()
 			}
+
 			for _, kind := range inclusion.Kinds {
-				resourceMap[apiGroup].Add(kind)
+				existingMap[apiGroup].Add(kind)
 			}
-		}
-		changeDetected := false
-		// Compare with groupVersion and update resourceMap
-		for apiGroup, kinds := range groupVersion {
-			if _, exists := resourceMap[apiGroup]; !exists {
-				resourceMap[apiGroup] = hashset.New()
+			// Detect if there are multiple API groups in a single inclusion
+			if len(inclusion.APIGroups) > 1 {
 				changeDetected = true
 			}
-			for _, kind := range kinds {
-				if !resourceMap[apiGroup].Contains(kind) {
-					resourceMap[apiGroup].Add(kind)
-					changeDetected = true
-				}
-			}
 		}
-		if !changeDetected {
-			klog.Infof("No changes detected in resource inclusions. ConfigMap update not required.")
+		// Skip update if no changes are detected and the maps are equal
+		if !changeDetected && hasResourceInclusionChanged(a.trackedResources, existingMap) {
+			log.Infof("No changes detected in the resource inclusions of the argocd-cm ConfigMap. Update skipped.")
 			return nil
 		}
-		// prepare
 		// Prepare the updated resource inclusions based on the resourceMap
-		updatedresourceInclusions := make([]resourceInclusion, 0, len(resourceMap))
-		for apiGroup, kindsSet := range resourceMap {
+		updatedresourceInclusions := make([]resourceInclusion, 0, len(a.trackedResources))
+		for apiGroup, kindsSet := range a.trackedResources {
 			kinds := make([]string, 0, kindsSet.Size())
 			for _, kind := range kindsSet.Values() {
 				kinds = append(kinds, kind.(string))
@@ -97,24 +89,22 @@ func updateresourceInclusion(resourceTree map[string][]string, k8sclient kuberne
 			configMap.Data = make(map[string]string)
 		}
 		configMap.Data["resource.inclusions"] = string(newYamlData)
-
-		_, err = k8sclient.CoreV1().ConfigMaps(namespace).Update(ctx, configMap, v1.UpdateOptions{})
+		_, err = a.kubeClient.Clientset.CoreV1().ConfigMaps(namespace).Update(ctx, configMap, v1.UpdateOptions{})
 		if err != nil {
-			klog.Warningf("Retrying due to conflict: %v", err)
+			log.Warningf("Retrying due to conflict: %v", err)
 			return err
 		}
-		klog.Infof("Resource inclusions updated successfully in argocd-cm ConfigMap.")
+		log.Infof("Resource inclusions updated successfully in argocd-cm ConfigMap.")
 		return nil
 	})
 }
 
 // GroupResourcesByAPIGroup processes the parent-child relationship map and groups resources by their API group and kind.
-func groupResourcesByAPIGroup(resourceTree map[string][]string) map[string][]string {
+func groupResourcesByAPIGroup(resourceTree map[string][]string) map[string]*hashset.Set {
 	groupedResources := make(map[string]*hashset.Set)
 	for parent, children := range resourceTree {
 		parentGroup := strings.Split(parent, "_")[0]
 		parentKind := strings.Split(parent, "_")[1]
-
 		if _, exists := groupedResources[parentGroup]; !exists {
 			groupedResources[parentGroup] = hashset.New()
 		}
@@ -122,61 +112,86 @@ func groupResourcesByAPIGroup(resourceTree map[string][]string) map[string][]str
 		for _, child := range children {
 			childGroup := strings.Split(child, "_")[0]
 			childKind := strings.Split(child, "_")[1]
-
 			if _, exists := groupedResources[childGroup]; !exists {
 				groupedResources[childGroup] = hashset.New()
 			}
 			groupedResources[childGroup].Add(childKind)
 		}
 	}
-	// Convert hashset to map of slices
-	result := make(map[string][]string)
-	for group, kindsSet := range groupedResources {
-		if group == "core" {
-			group = ""
-		}
-		kinds := make([]string, 0, kindsSet.Size())
-		for _, kind := range kindsSet.Values() {
-			kinds = append(kinds, kind.(string))
-		}
-		result[group] = kinds
-	}
-	return result
+
+	return groupedResources
 }
 
-func updateResourceRelationLookup(resourcemapper *resourcegraph.ResourceMapper, namespace string, k8sclient kubernetes.Interface) (map[string]string, error) {
+func (a *argocd) updateResourceRelationLookup(namespace, resourceMapperKey, appName string) (map[string]string, error) {
 	ctx := context.Background()
-	resourcesRelation, err := resourcemapper.GetResourcesRelationFilter(ctx)
+	// Retrieve the resource relation data
+	resourcesRelation, err := a.resourceMapperStore[resourceMapperKey].GetResourcesRelation(ctx)
 	if err != nil {
-		klog.Errorf("failed to update resource-relation-lookup ConfigMap: %v", err)
+		log.Errorf("failed to update resource-relation-lookup ConfigMap: %v", err)
 		return nil, err
 	}
+	// Build a new map with sorted values for deterministic ordering
 	convertedResourcesRelation := make(map[string]string)
 	for k, v := range resourcesRelation {
-		convertedResourcesRelation[k] = strings.Join(v, ",")
+		values := v.Values() // Avoid multiple calls
+		strValues := make([]string, len(values))
+		for i, val := range values {
+			strValues[i] = val.(string)
+		}
+		// Sort to ensure the same order every time
+		sort.Strings(strValues)
+		convertedResourcesRelation[k] = strings.Join(strValues, ",")
 	}
 	// Use retry logic to handle update conflicts
 	err = retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		// Fetch the latest version inside the retry loop to avoid stale reads
-		configMap, err := k8sclient.CoreV1().ConfigMaps(namespace).Get(ctx, RESOURCE_RELATION_LOOKUP, v1.GetOptions{})
+		// Fetch the latest version to avoid stale reads
+		configMap, err := a.kubeClient.Clientset.CoreV1().ConfigMaps(namespace).Get(ctx, RESOURCE_RELATION_LOOKUP, v1.GetOptions{})
 		if err != nil {
 			return fmt.Errorf("failed to fetch ConfigMap for update: %v", err)
 		}
 		if configMap.Data == nil {
 			configMap.Data = make(map[string]string)
 		}
+		// Compare the existing data with the new data.
+		// This avoids an update if nothing has changed.
+		if reflect.DeepEqual(configMap.Data, convertedResourcesRelation) {
+			log.Infof("No changes detected in resource-relation-lookup ConfigMap for app: %s. Update not required.", appName)
+			return nil
+		}
+		// Update the ConfigMap with the new data
 		maps.Copy(configMap.Data, convertedResourcesRelation)
-		_, err = k8sclient.CoreV1().ConfigMaps(namespace).Update(ctx, configMap, v1.UpdateOptions{})
+		_, err = a.kubeClient.Clientset.CoreV1().ConfigMaps(namespace).Update(ctx, configMap, v1.UpdateOptions{})
 		if err != nil {
-			klog.Warningf("Retrying due to conflict: %v", err)
+			log.Warnf("Retrying due to conflict: %v", err)
 			return err
 		}
+		log.Infof("Resource Relations updated successfully in resource-relation-lookup ConfigMap for app: %s.", appName)
 		return nil
 	})
 	if err != nil {
-		klog.Errorf("Final failure updating ConfigMap: %v", err)
+		log.Errorf("Final failure updating ConfigMap: %v", err)
 		return nil, err
 	}
-	klog.Infof("Resource Relations updated successfully in resource-relation-lookup ConfigMap.")
 	return convertedResourcesRelation, nil
+}
+
+func hasResourceInclusionChanged(a, b map[string]*hashset.Set) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for apiGroup, kindsA := range a {
+		kindsB, ok := b[apiGroup]
+		if !ok {
+			return false
+		}
+		if kindsA.Size() != kindsB.Size() {
+			return false
+		}
+		for _, kind := range kindsA.Values() {
+			if !kindsB.Contains(kind) {
+				return false
+			}
+		}
+	}
+	return true
 }

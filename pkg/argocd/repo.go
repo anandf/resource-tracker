@@ -4,14 +4,18 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/argoproj/argo-cd/v2/common"
 	appsv1alpha1 "github.com/argoproj/argo-cd/v2/pkg/apis/application/v1alpha1"
 	"github.com/argoproj/argo-cd/v2/reposerver/apiclient"
 	"github.com/argoproj/argo-cd/v2/util/argo"
 	"github.com/argoproj/argo-cd/v2/util/db"
+	"github.com/argoproj/argo-cd/v2/util/env"
 	"github.com/argoproj/argo-cd/v2/util/io"
 	kubeutil "github.com/argoproj/argo-cd/v2/util/kube"
 	"github.com/argoproj/argo-cd/v2/util/settings"
+	"github.com/argoproj/argo-cd/v2/util/tls"
 	"github.com/argoproj/gitops-engine/pkg/utils/kube"
+	log "github.com/sirupsen/logrus"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
@@ -29,11 +33,24 @@ type repoServerManager struct {
 	kubectl       kube.Kubectl
 }
 
-func NewRepoServerManager(kubeClient kubernetes.Interface, controllerNamespace string) *repoServerManager {
+func NewRepoServerManager(kubeClient kubernetes.Interface, controllerNamespace string, repoServerAddress string, repoServerTimeoutSeconds int, repoServerPlaintext bool, repoServerStrictTLS bool) *repoServerManager {
 	settingsMgr := settings.NewSettingsManager(context.Background(), kubeClient, controllerNamespace)
 	dbInstance := db.NewDB(controllerNamespace, settingsMgr, kubeClient)
-	repoServerAddress, _ := getRepoServerAddress(kubeClient, controllerNamespace)
-	repoClientset := apiclient.NewRepoServerClientset(repoServerAddress, 120, apiclient.TLSConfiguration{DisableTLS: false, StrictValidation: false})
+	tlsConfig := apiclient.TLSConfiguration{
+		DisableTLS:       repoServerPlaintext,
+		StrictValidation: repoServerStrictTLS,
+	}
+	if !tlsConfig.DisableTLS && tlsConfig.StrictValidation {
+		pool, err := tls.LoadX509CertPool(
+			fmt.Sprintf("%s/reposerver/tls/tls.crt", env.StringFromEnv(common.EnvAppConfigPath, common.DefaultAppConfigPath)),
+			fmt.Sprintf("%s/reposerver/tls/ca.crt", env.StringFromEnv(common.EnvAppConfigPath, common.DefaultAppConfigPath)),
+		)
+		if err != nil {
+			log.Fatalf("Failed to load tls certs: %v", err)
+		}
+		tlsConfig.Certificates = pool
+	}
+	repoClientset := apiclient.NewRepoServerClientset(repoServerAddress, repoServerTimeoutSeconds, tlsConfig)
 	kubectl := kubeutil.NewKubectl()
 
 	return &repoServerManager{
@@ -127,7 +144,6 @@ func getApplicationChildManifests(ctx context.Context, application *appsv1alpha1
 	}
 	targetObjs := make([]*unstructured.Unstructured, 0)
 	for i, source := range sources {
-
 		repo, err := repoServerManager.db.GetRepository(ctx, source.RepoURL, proj.Name)
 		if err != nil {
 			return nil, nil, fmt.Errorf("error fetching repository: %w", err)
@@ -165,9 +181,11 @@ func getApplicationChildManifests(ctx context.Context, application *appsv1alpha1
 			return nil, nil, fmt.Errorf("error unmarshalling manifests: %w", err)
 		}
 		targetObjs = append(targetObjs, targetObj...)
+		log.Debugf("Successfully fetched %v target manifest(s) from repo-server for application: %s. Manifests: %v", len(manifestInfo.Manifests), application.Name, manifestInfo.Manifests)
 	}
 	return targetObjs, cluster.RESTConfig(), nil
 }
+
 func unmarshalManifests(manifests []string) ([]*unstructured.Unstructured, error) {
 	targetObjs := make([]*unstructured.Unstructured, 0)
 	for _, manifest := range manifests {

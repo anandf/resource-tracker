@@ -5,7 +5,7 @@ metadata:
     app.kubernetes.io/component: controller
     app.kubernetes.io/name: argocd-resource-tracker
     app.kubernetes.io/part-of: aargocd-resource-tracker
-  name: argocd-resource-tracker-sa
+  name: argocd-resource-tracker-controller
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -32,28 +32,45 @@ spec:
       labels:
         app: argocd-resource-tracker
     spec:
-      serviceAccountName: argocd-resource-tracker-sa
       containers:
-        - name: argocd-resource-tracker
-          image: docker.io/mangaaldochub/argocd-resource-tracker:rc-v1@sha256:73952a9ba00915add2f8a6d78514f5652658e4fe89317a1345f6b7d03276c1c6
-          args: 
-          - run
-          resources:
-            limits:
-              cpu: "500m"
-              memory: "512Mi"
-            requests:
-              cpu: "250m"
-              memory: "256Mi"
-          securityContext:
-            allowPrivilegeEscalation: false
-            capabilities:
-              drop:
-              - ALL
-            readOnlyRootFilesystem: true
-            runAsNonRoot: true
-            seccompProfile:
-              type: RuntimeDefault    
+      - name: argocd-resource-tracker
+        image: quay.io/mangaal/argocd-resource-tracker:test-v1@sha256:5cb7b7c91a2d0e09e9ac9555cb897ee3e83120e90bf01bb9f66e950b6ea417c2
+        imagePullPolicy: Always
+        args: 
+        - run
+        - --loglevel=debug
+        resources:
+          limits:
+            cpu: "500m"
+            memory: "512Mi"
+          requests:
+            cpu: "250m"
+            memory: "256Mi"
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          seccompProfile:
+            type: RuntimeDefault  
+        volumeMounts:    
+          - mountPath: /app/config/reposerver/tls
+            name: argocd-repo-server-tls 
+      serviceAccountName: argocd-resource-tracker-controller   
+      volumes:
+        - name: argocd-repo-server-tls
+          secret:
+            items:
+            - key: tls.crt
+              path: tls.crt
+            - key: tls.key
+              path: tls.key
+            - key: ca.crt
+              path: ca.crt
+            optional: true
+            secretName: argocd-repo-server-tls     
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
@@ -79,7 +96,7 @@ metadata:
   name: argocd-resource-tracker-clusterrolebinding
 subjects:
   - kind: ServiceAccount
-    name: argocd-resource-tracker-sa
+    name: argocd-resource-tracker-controller
     namespace: argocd
 roleRef:
   kind: ClusterRole
@@ -110,7 +127,7 @@ metadata:
   name: argocd-resource-tracker-rolebinding
 subjects:
   - kind: ServiceAccount
-    name: argocd-resource-tracker-sa
+    name: argocd-resource-tracker-controller
 roleRef:
   kind: Role
   name: argocd-resource-tracker-role

@@ -3,21 +3,20 @@ package resourcegraph
 import (
 	"context"
 	"fmt"
-	"slices"
+	"reflect"
 
 	"github.com/anandf/resource-tracker/pkg/kube"
 	"github.com/emirpasic/gods/sets/hashset"
+	log "github.com/sirupsen/logrus"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	apiextensionsclient "k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset"
 	apiextensionsinformer "k8s.io/apiextensions-apiserver/pkg/client/informers/externalversions"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/cache"
-	"k8s.io/klog/v2"
 )
 
 type ResourceMapper struct {
@@ -59,13 +58,24 @@ func NewResourceMapper(destinationConfig *rest.Config) (*ResourceMapper, error) 
 	}
 
 	if err := rm.Init(); err != nil {
-		klog.Errorf("Error loading native resources: %v", err)
+		log.Errorf("Error loading native resources: %v", err)
 	}
 
 	// Set up event handlers
 	crdInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: rm.addToResourceList,
 		UpdateFunc: func(oldObj, newObj interface{}) {
+			oldCRD, ok1 := oldObj.(*apiextensionsv1.CustomResourceDefinition)
+			newCRD, ok2 := newObj.(*apiextensionsv1.CustomResourceDefinition)
+			if !ok1 || !ok2 {
+				log.Errorf("Failed to convert objects to CRD")
+				return
+			}
+			// Compare the spec fields before reprocessing
+			if reflect.DeepEqual(oldCRD.Spec, newCRD.Spec) {
+				log.Debugf("CRD %s update ignored as there is no spec change", newCRD.Name)
+				return
+			}
 			rm.addToResourceList(newObj)
 		},
 	})
@@ -75,7 +85,7 @@ func NewResourceMapper(destinationConfig *rest.Config) (*ResourceMapper, error) 
 func (r *ResourceMapper) addToResourceList(obj interface{}) {
 	crd, ok := obj.(*apiextensionsv1.CustomResourceDefinition)
 	if !ok {
-		klog.Errorf("Failed to convert object to CRD")
+		log.Errorf("Failed to convert object to CRD")
 		return
 	}
 
@@ -89,10 +99,14 @@ func (r *ResourceMapper) addToResourceList(obj interface{}) {
 			Version:  version.Name,
 			Resource: crd.Spec.Names.Plural, // CRD resources are named using the `plural` field
 		}
-
+		// Log whether we're updating or adding a new CRD version
+		if r.ResourceList.Contains(gvr) {
+			log.Debugf("Updating existing CRD version: %s/%s (%s)", gvr.Group, gvr.Version, gvr.Resource)
+		} else {
+			log.Infof("Adding new CRD version: %s/%s (%s)", gvr.Group, gvr.Version, gvr.Resource)
+		}
 		// Add the served version of CRD to ResourceList
 		r.ResourceList.Add(gvr)
-		klog.Infof("New CRD version added: %s/%s (%s)", gvr.Group, gvr.Version, gvr.Resource)
 	}
 }
 
@@ -100,12 +114,10 @@ func (r *ResourceMapper) Init() error {
 	// Get API resource list
 	resourceList, err := r.DiscoveryClient.ServerPreferredResources()
 	if err != nil {
-		if discovery.IsGroupDiscoveryFailedError(err) {
-			klog.Warningf("Skipping stale API groups: %v", err)
-		} else {
-			klog.Errorf("Failed to get API resource list: %v", err)
-			return fmt.Errorf("failed to get API resource list: %w", err)
+		if len(resourceList) == 0 {
+			return err
 		}
+		log.Errorf("Partial success when performing preferred resource discovery: %v", err)
 	}
 	for _, resourceGroup := range resourceList {
 		for _, resource := range resourceGroup.APIResources {
@@ -123,69 +135,80 @@ func (r *ResourceMapper) Init() error {
 			}
 			r.ResourceList.Add(gvr)
 		}
-
 	}
 	return nil
 }
 
 func (r *ResourceMapper) StartInformer() {
-	klog.Infof("Starting informer for cluster")
+	log.Info("Starting informer for cluster")
 	r.InformerFactory.Start(context.Background().Done())
 }
 
-// GetResourcesRelationFilter retrieves a mapping of parent resource kinds to their child resource kinds.
-func (r *ResourceMapper) GetResourcesRelationFilter(ctx context.Context) (map[string][]string, error) {
-	childMap := make(map[string][]unstructured.Unstructured)
-	directChildren := make(map[string]struct{})
-	resourceRelation := make(map[string][]string)
+// GetResourcesRelation retrieves a mapping of parent resource kinds to their child resource kinds.
+func (r *ResourceMapper) GetResourcesRelation(ctx context.Context) (map[string]*hashset.Set, error) {
+	resourceRelation := make(map[string]*hashset.Set)
 	// Iterate over all API resources
 	for _, value := range r.ResourceList.Values() {
-		// Get all resources in the namespace
 		gvr, ok := value.(schema.GroupVersionResource)
 		if !ok {
-			klog.Errorf("Failed to assert type for gvr: %v", gvr)
+			log.Errorf("Failed to assert type for gvr: %v", value)
 			continue
 		}
-		resourceList, err := r.DynamicClient.Resource(gvr).Namespace(v1.NamespaceAll).List(ctx, v1.ListOptions{})
-		if err != nil {
-			klog.Errorf("Failed to list resources for %s: %v", gvr.Resource, err)
-			continue
-		}
-		// Check owner references
-		for _, item := range resourceList.Items {
-			if isDirectChild(item) {
-				directChildren[string(item.GetUID())] = struct{}{}
+		var continueToken string
+		for {
+			resourceList, err := r.DynamicClient.Resource(gvr).Namespace(v1.NamespaceAll).List(ctx, v1.ListOptions{
+				Limit:    250,
+				Continue: continueToken,
+			})
+			if err != nil {
+				log.Errorf("Failed to list resources for %s: %v", gvr.Resource, err)
+				break
 			}
-			for _, ownerRef := range item.GetOwnerReferences() {
-				parentUID := string(ownerRef.UID)
-				childMap[parentUID] = append(childMap[parentUID], item)
-			}
-		}
-
-	}
-	for parentUID, items := range childMap {
-		if _, idExists := directChildren[parentUID]; idExists {
-			for _, item := range items {
+			// Process each resource
+			for _, item := range resourceList.Items {
 				for _, ownerRef := range item.GetOwnerReferences() {
-					child := kube.GetResourceKey(item.GetAPIVersion(), item.GetKind())
 					parent := kube.GetResourceKey(ownerRef.APIVersion, ownerRef.Kind)
-					// Avoid duplicates
-					if !slices.Contains(resourceRelation[parent], child) {
-						resourceRelation[parent] = append(resourceRelation[parent], child)
+					child := kube.GetResourceKey(item.GetAPIVersion(), item.GetKind())
+					// Initialize resourceRelation[parent] if not present
+					if _, exists := resourceRelation[parent]; !exists {
+						resourceRelation[parent] = hashset.New()
 					}
+					resourceRelation[parent].Add(child)
+				}
+				// Special case
+				if item.GetKind() == "ClusterServiceVersion" {
+					parent := kube.GetResourceKey("operators.coreos.com/v1", "OperatorGroup")
+					child := kube.GetResourceKey(item.GetAPIVersion(), item.GetKind())
+					if _, exists := resourceRelation[parent]; !exists {
+						resourceRelation[parent] = hashset.New()
+					}
+					resourceRelation[parent].Add(child)
+				}
+				if item.GetKind() == "Secret" {
+					parent := kube.GetResourceKey("v1", "ServiceAccount")
+					child := kube.GetResourceKey(item.GetAPIVersion(), item.GetKind())
+					if _, exists := resourceRelation[parent]; !exists {
+						resourceRelation[parent] = hashset.New()
+					}
+					resourceRelation[parent].Add(child)
+				}
+				if item.GetKind() == "volumeClaimTemplates" {
+					// add sts as parent
+					parent := kube.GetResourceKey("apps/v1", "StatefulSet")
+					child := kube.GetResourceKey(item.GetAPIVersion(), item.GetKind())
+					if _, exists := resourceRelation[parent]; !exists {
+						resourceRelation[parent] = hashset.New()
+					}
+					resourceRelation[parent].Add(child)
 				}
 			}
+			// Check if there are more results to fetch
+			continueToken = resourceList.GetContinue()
+			if continueToken == "" {
+				break
+			}
 		}
 	}
 
-	// Example return format:
-	// map[apps_DaemonSet:[core_Pod apps_ControllerRevision] apps_Deployment:[apps_ReplicaSet] apps_ReplicaSet:[core_Pod] apps_StatefulSet:[core_Pod apps_ControllerRevision] core_Node:[core_Pod coordination.k8s.io_Lease] core_Service:[discovery.k8s.io_EndpointSlice]]
 	return resourceRelation, nil
-}
-
-// Helper to check if an object is a direct child of an application
-func isDirectChild(obj unstructured.Unstructured) bool {
-	annotations := obj.GetAnnotations()
-	_, idExists := annotations["argocd.argoproj.io/tracking-id"]
-	return idExists
 }

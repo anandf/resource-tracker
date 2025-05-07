@@ -1,0 +1,15 @@
+apiVersion: v2
+description: A Helm chart for deploying the Argo CD Resource Tracker, which monitors and tracks resources managed by Argo CD in Kubernetes clusters
+type: application
+# 'version' is the chart version, used by Helm to manage chart releases.
+# 'appVersion' is the version of the application being deployed.
+version: 1.0.0
+appVersion: "v1.0.0"
+name: argocd-resource-tracker
+keywords:
+  - argocd
+  - resource-tracker
+  - resource-management
+home: https://github.com/Mangaal/resource-tracker
+source:
+  - https://github.com/Mangaal/resource-tracker
