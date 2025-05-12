@@ -11,6 +11,7 @@ import (
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	apiextensionsclient "k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset"
 	apiextensionsinformer "k8s.io/apiextensions-apiserver/pkg/client/informers/externalversions"
+	k8sErrors "k8s.io/apimachinery/pkg/api/errors"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/discovery"
@@ -28,6 +29,8 @@ type ResourceMapper struct {
 }
 
 func NewResourceMapper(destinationConfig *rest.Config) (*ResourceMapper, error) {
+	destinationConfig.QPS = 50
+	destinationConfig.Burst = 100
 	apiextensionsClient, err := apiextensionsclient.NewForConfig(destinationConfig)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create apiextensions client: %w", err)
@@ -92,6 +95,10 @@ func (r *ResourceMapper) addToResourceList(obj interface{}) {
 	for _, version := range crd.Spec.Versions {
 		if !version.Served {
 			continue // Skip versions that are not served
+		}
+		// Check if the CRD is namespaced
+		if !(crd.Spec.Scope == apiextensionsv1.NamespaceScoped) {
+			continue
 		}
 
 		gvr := schema.GroupVersionResource{
@@ -161,7 +168,9 @@ func (r *ResourceMapper) GetResourcesRelation(ctx context.Context) (map[string]*
 				Continue: continueToken,
 			})
 			if err != nil {
-				log.Errorf("Failed to list resources for %s: %v", gvr.Resource, err)
+				if !k8sErrors.IsNotFound(err) {
+					log.Errorf("Failed to list resource %s: %v", gvr, err)
+				}
 				break
 			}
 			// Process each resource

@@ -51,6 +51,9 @@ func (a *argocd) UpdateResourceInclusion(namespace string) error {
 				continue
 			}
 			apiGroup := inclusion.APIGroups[0]
+			if apiGroup == "" {
+				apiGroup = "core"
+			}
 			if _, found := existingMap[apiGroup]; !found {
 				existingMap[apiGroup] = hashset.New()
 			}
@@ -71,6 +74,9 @@ func (a *argocd) UpdateResourceInclusion(namespace string) error {
 		// Prepare the updated resource inclusions based on the resourceMap
 		updatedresourceInclusions := make([]resourceInclusion, 0, len(a.trackedResources))
 		for apiGroup, kindsSet := range a.trackedResources {
+			if apiGroup == "core" {
+				apiGroup = ""
+			}
 			kinds := make([]string, 0, kindsSet.Size())
 			for _, kind := range kindsSet.Values() {
 				kinds = append(kinds, kind.(string))
@@ -123,6 +129,8 @@ func groupResourcesByAPIGroup(resourceTree map[string][]string) map[string]*hash
 }
 
 func (a *argocd) updateResourceRelationLookup(namespace, resourceMapperKey, appName string) (map[string]string, error) {
+	a.mapperMutex.Lock()
+	defer a.mapperMutex.Unlock()
 	ctx := context.Background()
 	// Retrieve the resource relation data
 	resourcesRelation, err := a.resourceMapperStore[resourceMapperKey].GetResourcesRelation(ctx)
