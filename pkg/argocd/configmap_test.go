@@ -117,7 +117,7 @@ func TestUpdateResourceInclusion(t *testing.T) {
   clusters:
   - '*'
 - apiGroups:
-  - core
+  - ''
   kinds:
   - Pod
   clusters:
@@ -145,7 +145,7 @@ func TestUpdateResourceInclusion(t *testing.T) {
   clusters:
   - '*'
 - apiGroups:
-  - core
+  - ''
   kinds:
   - Pod
   clusters:

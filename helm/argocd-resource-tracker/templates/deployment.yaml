@@ -19,7 +19,7 @@ spec:
       - name: argocd-resource-tracker
         image: {{ .Values.image.repository }}:{{ .Values.image.tag }}
         imagePullPolicy: {{ .Values.image.pullPolicy }}
-        args: ["run", "--loglevel=debug"]
+        args: ["run", "--loglevel=debug", {{ .Values.reposerver.name }}]
         resources:
           {{- toYaml .Values.resources | nindent 10 }}
         securityContext:
