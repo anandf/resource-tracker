@@ -9,7 +9,6 @@ require (
 	github.com/argoproj/gitops-engine v0.7.1-0.20250129155113-4c6e03c46314
 	github.com/avitaltamir/cyphernetes v0.17.3-0.20250528180625-d07fbac2979a
 	github.com/emirpasic/gods v1.18.1
-	github.com/golang-collections/collections v0.0.0-20130729185459-604e922904d3
 	github.com/sirupsen/logrus v1.9.3
 	github.com/spf13/cobra v1.8.1
 	github.com/stretchr/testify v1.10.0
@@ -18,6 +17,7 @@ require (
 	k8s.io/apiextensions-apiserver v0.31.2
 	k8s.io/apimachinery v0.32.0
 	k8s.io/client-go v1.5.2
+	sigs.k8s.io/yaml v1.4.0
 )
 
 require (
@@ -159,11 +159,11 @@ require (
 	sigs.k8s.io/kustomize/api v0.17.2 // indirect
 	sigs.k8s.io/kustomize/kyaml v0.17.1 // indirect
 	sigs.k8s.io/structured-merge-diff/v4 v4.4.3 // indirect
-	sigs.k8s.io/yaml v1.4.0 // indirect
 )
 
 replace (
 	github.com/AvitalTamir/cyphernetes => github.com/avitaltamir/cyphernetes v0.17.3-0.20250528180625-d07fbac2979a
+	github.com/avitaltamir/cyphernetes => github.com/anandf/cyphernetes v0.0.0-20250605145557-2257cfbec36c
 	github.com/golang/protobuf => github.com/golang/protobuf v1.5.4
 
 	k8s.io/api => k8s.io/api v0.31.0
