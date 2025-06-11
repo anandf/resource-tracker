@@ -54,9 +54,11 @@ func NewQueryServer(restConfig *rest.Config, trackingMethod string) (*queryServe
 
 	fieldAMatchCriteria := LabelTracking
 	tracker := "LBL"
+	comparision := core.ExactMatch
 	if trackingMethod == "annotation" {
 		fieldAMatchCriteria = AnnotationTracking
 		tracker = "ANN"
+		comparision = core.StringContains
 	}
 
 	for _, knownResourceKind := range provider.(*apiserver.APIServerProvider).GetKnownResourceKinds() {
@@ -68,7 +70,7 @@ func NewQueryServer(restConfig *rest.Config, trackingMethod string) (*queryServe
 				{
 					FieldA:         fieldAMatchCriteria,
 					FieldB:         "$.metadata.name",
-					ComparisonType: core.StringContains,
+					ComparisonType: comparision,
 				},
 			},
 		})
@@ -139,7 +141,6 @@ func (q *queryServer) depthFirstTraversal(info *ResourceInfo, visitedNodes Resou
 		return visitedNodes, nil
 	}
 	visitedNodes[*info] = Void{}
-
 	// 2. Get children of the current node
 	children, err := q.getChildren(info)
 	if err != nil {
