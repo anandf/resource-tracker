@@ -7,7 +7,7 @@ toolchain go1.23.4
 require (
 	github.com/argoproj/argo-cd/v2 v2.13.5
 	github.com/argoproj/gitops-engine v0.7.1-0.20250129155113-4c6e03c46314
-	github.com/avitaltamir/cyphernetes v0.17.3-0.20250528180625-d07fbac2979a
+	github.com/avitaltamir/cyphernetes v0.17.3-0.20250611062930-23ef9a618737
 	github.com/emirpasic/gods v1.18.1
 	github.com/sirupsen/logrus v1.9.3
 	github.com/spf13/cobra v1.8.1
@@ -162,8 +162,7 @@ require (
 )
 
 replace (
-	github.com/AvitalTamir/cyphernetes => github.com/avitaltamir/cyphernetes v0.17.3-0.20250528180625-d07fbac2979a
-	github.com/avitaltamir/cyphernetes => github.com/anandf/cyphernetes v0.0.0-20250605145557-2257cfbec36c
+	github.com/AvitalTamir/cyphernetes => github.com/avitaltamir/cyphernetes v0.17.3-0.20250611062930-23ef9a618737
 	github.com/golang/protobuf => github.com/golang/protobuf v1.5.4
 
 	k8s.io/api => k8s.io/api v0.31.0

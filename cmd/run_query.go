@@ -106,7 +106,7 @@ func runQueryExecutor() error {
 
 func mergeResourceInfo(input graph.ResourceInfoSet) graph.GroupedResourceKinds {
 	results := make(graph.GroupedResourceKinds, 0)
-
+	uniqueResourceKinds := make(map[string]graph.Void)
 	for resourceInfo, _ := range input {
 		if len(resourceInfo.APIVersion) <= 0 {
 			continue
@@ -115,8 +115,11 @@ func mergeResourceInfo(input graph.ResourceInfoSet) graph.GroupedResourceKinds {
 		kinds, ok := results[apiGroup]
 		if !ok {
 			results[apiGroup] = []string{resourceInfo.Kind}
+			uniqueResourceKinds[fmt.Sprintf("%s_%s", apiGroup, resourceInfo.Kind)] = graph.Void{}
 		} else {
-			results[apiGroup] = append(kinds, resourceInfo.Kind)
+			if _, ok := uniqueResourceKinds[fmt.Sprintf("%s_%s", apiGroup, resourceInfo.Kind)]; !ok {
+				results[apiGroup] = append(kinds, resourceInfo.Kind)
+			}
 		}
 	}
 	return results
