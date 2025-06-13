@@ -88,7 +88,7 @@ func NewQueryServer(restConfig *rest.Config, trackingMethod string) (*queryServe
 }
 
 func (q *queryServer) GetApplicationChildResources(name, namespace string) (ResourceInfoSet, error) {
-	allLevelChildren := make(ResourceInfoSet, 0)
+	allLevelChildren := make(ResourceInfoSet)
 	allLevelChildren, err := q.depthFirstTraversal(&ResourceInfo{Kind: "application", Name: name, Namespace: namespace}, allLevelChildren)
 	if err != nil {
 		return nil, err
@@ -144,7 +144,8 @@ func (q *queryServer) depthFirstTraversal(info *ResourceInfo, visitedNodes Resou
 	// 2. Get children of the current node
 	children, err := q.getChildren(info)
 	if err != nil {
-		return visitedNodes, nil
+		log.Error("error getting children: %v", err)
+		return visitedNodes, err
 	}
 
 	// 3. Recursively call DFS for each child
