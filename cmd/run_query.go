@@ -51,7 +51,6 @@ func newRunQueryCommand() *cobra.Command {
 			}
 			log.SetLevel(level)
 			core.LogLevel = cfg.LogLevel
-			core.AllNamespaces = true
 			return runQueryExecutor()
 		},
 	}
