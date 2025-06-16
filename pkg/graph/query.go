@@ -54,11 +54,11 @@ func NewQueryServer(restConfig *rest.Config, trackingMethod string) (*queryServe
 
 	fieldAMatchCriteria := LabelTracking
 	tracker := "LBL"
-	comparision := core.ExactMatch
+	comparison := core.ExactMatch
 	if trackingMethod == "annotation" {
 		fieldAMatchCriteria = AnnotationTracking
 		tracker = "ANN"
-		comparision = core.StringContains
+		comparison = core.StringContains
 	}
 
 	for _, knownResourceKind := range provider.(*apiserver.APIServerProvider).GetKnownResourceKinds() {
@@ -70,7 +70,7 @@ func NewQueryServer(restConfig *rest.Config, trackingMethod string) (*queryServe
 				{
 					FieldA:         fieldAMatchCriteria,
 					FieldB:         "$.metadata.name",
-					ComparisonType: comparision,
+					ComparisonType: comparison,
 				},
 			},
 		})
@@ -79,7 +79,7 @@ func NewQueryServer(restConfig *rest.Config, trackingMethod string) (*queryServe
 	executor := core.GetQueryExecutorInstance(provider)
 	if executor == nil {
 		os.Exit(1)
-	}
+	}-;
 	return &queryServer{
 		Provider: provider,
 		Executor: executor,

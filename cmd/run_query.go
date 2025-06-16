@@ -90,7 +90,7 @@ func runQueryExecutor() error {
 	if err != nil {
 		return err
 	}
-	var argoAppNames []string
+	var argoAppResources []graph.ResourceInfo
 
 	list, err := dynamicClient.Resource(schema.GroupVersionResource{
 		Group:    "argoproj.io",
@@ -103,16 +103,18 @@ func runQueryExecutor() error {
 	for _, obj := range list.Items {
 		if len(applicationName) > 0 {
 			if applicationName == obj.GetName() {
-				argoAppNames = append(argoAppNames, obj.GetName())
+				argoAppResources = append(argoAppResources, graph.ResourceInfo{Kind: obj.GetKind(), Name: obj.GetName(), Namespace: obj.GetNamespace()})
 				break
 			}
 		} else {
-			argoAppNames = append(argoAppNames, obj.GetName())
+			argoAppResources = append(argoAppResources, graph.ResourceInfo{Kind: obj.GetKind(), Name: obj.GetName(), Namespace: obj.GetNamespace()})
 		}
 	}
 	var allAppChildren []graph.ResourceInfo
-	for _, argoAppName := range argoAppNames {
-		appChildren, err := queryServer.GetApplicationChildResources(argoAppName, "")
+	for _, argoAppResource := range argoAppResources {
+		log.Infof("Querying Argo CD application '%v'", argoAppResource)
+		appChildren, err := queryServer.GetApplicationChildResources(argoAppResource.Name, "")
+		log.Infof("Children of Argo CD application '%s': %v", argoAppResource.Name, appChildren)
 		if err != nil {
 			return err
 		}

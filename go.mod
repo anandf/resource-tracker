@@ -163,7 +163,7 @@ require (
 
 replace (
 	github.com/AvitalTamir/cyphernetes => github.com/avitaltamir/cyphernetes v0.17.3-0.20250528180625-d07fbac2979a
-	github.com/avitaltamir/cyphernetes => github.com/anandf/cyphernetes v0.0.0-20250613144004-38f4718e30ee
+	github.com/avitaltamir/cyphernetes => github.com/anandf/cyphernetes v0.0.0-20250613164803-0ed4416bd6f5
 	github.com/golang/protobuf => github.com/golang/protobuf v1.5.4
 
 	k8s.io/api => k8s.io/api v0.31.0
