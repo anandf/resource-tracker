@@ -54,9 +54,11 @@ func NewQueryServer(restConfig *rest.Config, trackingMethod string) (*queryServe
 
 	fieldAMatchCriteria := LabelTracking
 	tracker := "LBL"
+	comparison := core.ExactMatch
 	if trackingMethod == "annotation" {
 		fieldAMatchCriteria = AnnotationTracking
 		tracker = "ANN"
+		comparison = core.StringContains
 	}
 
 	for _, knownResourceKind := range provider.(*apiserver.APIServerProvider).GetKnownResourceKinds() {
@@ -68,7 +70,7 @@ func NewQueryServer(restConfig *rest.Config, trackingMethod string) (*queryServe
 				{
 					FieldA:         fieldAMatchCriteria,
 					FieldB:         "$.metadata.name",
-					ComparisonType: core.StringContains,
+					ComparisonType: comparison,
 				},
 			},
 		})
@@ -77,7 +79,7 @@ func NewQueryServer(restConfig *rest.Config, trackingMethod string) (*queryServe
 	executor := core.GetQueryExecutorInstance(provider)
 	if executor == nil {
 		os.Exit(1)
-	}
+	}-;
 	return &queryServer{
 		Provider: provider,
 		Executor: executor,
@@ -86,7 +88,7 @@ func NewQueryServer(restConfig *rest.Config, trackingMethod string) (*queryServe
 }
 
 func (q *queryServer) GetApplicationChildResources(name, namespace string) (ResourceInfoSet, error) {
-	allLevelChildren := make(ResourceInfoSet, 0)
+	allLevelChildren := make(ResourceInfoSet)
 	allLevelChildren, err := q.depthFirstTraversal(&ResourceInfo{Kind: "application", Name: name, Namespace: namespace}, allLevelChildren)
 	if err != nil {
 		return nil, err
@@ -139,11 +141,11 @@ func (q *queryServer) depthFirstTraversal(info *ResourceInfo, visitedNodes Resou
 		return visitedNodes, nil
 	}
 	visitedNodes[*info] = Void{}
-
 	// 2. Get children of the current node
 	children, err := q.getChildren(info)
 	if err != nil {
-		return visitedNodes, nil
+		log.Error("error getting children: %v", err)
+		return visitedNodes, err
 	}
 
 	// 3. Recursively call DFS for each child
