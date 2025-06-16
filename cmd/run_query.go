@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -12,6 +13,9 @@ import (
 	"github.com/avitaltamir/cyphernetes/pkg/core"
 	log "github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
+	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	"sigs.k8s.io/yaml"
@@ -82,11 +86,43 @@ func runQueryExecutor() error {
 	if err != nil {
 		return err
 	}
-	appChildren, err := queryServer.GetApplicationChildResources(applicationName, applicationNamespace)
+	dynamicClient, err := dynamic.NewForConfig(restConfig)
 	if err != nil {
 		return err
 	}
-	resourceInclusion := mergeResourceInfo(appChildren)
+	var argoAppResources []graph.ResourceInfo
+
+	list, err := dynamicClient.Resource(schema.GroupVersionResource{
+		Group:    "argoproj.io",
+		Version:  "v1alpha1",
+		Resource: "applications",
+	}).Namespace(applicationNamespace).List(context.Background(), v1.ListOptions{})
+	if err != nil {
+		return err
+	}
+	for _, obj := range list.Items {
+		if len(applicationName) > 0 {
+			if applicationName == obj.GetName() {
+				argoAppResources = append(argoAppResources, graph.ResourceInfo{Kind: obj.GetKind(), Name: obj.GetName(), Namespace: obj.GetNamespace()})
+				break
+			}
+		} else {
+			argoAppResources = append(argoAppResources, graph.ResourceInfo{Kind: obj.GetKind(), Name: obj.GetName(), Namespace: obj.GetNamespace()})
+		}
+	}
+	var allAppChildren []graph.ResourceInfo
+	for _, argoAppResource := range argoAppResources {
+		log.Infof("Querying Argo CD application '%v'", argoAppResource)
+		appChildren, err := queryServer.GetApplicationChildResources(argoAppResource.Name, "")
+		log.Infof("Children of Argo CD application '%s': %v", argoAppResource.Name, appChildren)
+		if err != nil {
+			return err
+		}
+		for appChild, _ := range appChildren {
+			allAppChildren = append(allAppChildren, appChild)
+		}
+	}
+	resourceInclusion := mergeResourceInfo(allAppChildren)
 	includedResources := make([]graph.ResourceInclusionEntry, 0, len(resourceInclusion))
 	for group, kinds := range resourceInclusion {
 		includedResources = append(includedResources, graph.ResourceInclusionEntry{
@@ -104,10 +140,9 @@ func runQueryExecutor() error {
 	return nil
 }
 
-func mergeResourceInfo(input graph.ResourceInfoSet) graph.GroupedResourceKinds {
+func mergeResourceInfo(input []graph.ResourceInfo) graph.GroupedResourceKinds {
 	results := make(graph.GroupedResourceKinds, 0)
-
-	for resourceInfo, _ := range input {
+	for _, resourceInfo := range input {
 		if len(resourceInfo.APIVersion) <= 0 {
 			continue
 		}
