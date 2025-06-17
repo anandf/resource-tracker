@@ -114,10 +114,10 @@ func runQueryExecutor() error {
 	for _, argoAppResource := range argoAppResources {
 		log.Infof("Querying Argo CD application '%v'", argoAppResource)
 		appChildren, err := queryServer.GetApplicationChildResources(argoAppResource.Name, "")
-		log.Infof("Children of Argo CD application '%s': %v", argoAppResource.Name, appChildren)
 		if err != nil {
 			return err
 		}
+		log.Infof("Children of Argo CD application '%s': %v", argoAppResource.Name, appChildren)
 		for appChild, _ := range appChildren {
 			allAppChildren = append(allAppChildren, appChild)
 		}
@@ -127,7 +127,7 @@ func runQueryExecutor() error {
 	for group, kinds := range resourceInclusion {
 		includedResources = append(includedResources, graph.ResourceInclusionEntry{
 			APIGroups: []string{group},
-			Kinds:     kinds,
+			Kinds:     getUniqueKinds(kinds),
 			Clusters:  []string{"*"},
 		})
 	}
@@ -147,11 +147,12 @@ func mergeResourceInfo(input []graph.ResourceInfo) graph.GroupedResourceKinds {
 			continue
 		}
 		apiGroup := getAPIGroup(resourceInfo.APIVersion)
-		kinds, ok := results[apiGroup]
-		if !ok {
-			results[apiGroup] = []string{resourceInfo.Kind}
+		if _, found := results[apiGroup]; !found {
+			results[apiGroup] = map[string]graph.Void{
+				resourceInfo.Kind: {},
+			}
 		} else {
-			results[apiGroup] = append(kinds, resourceInfo.Kind)
+			results[apiGroup][resourceInfo.Kind] = graph.Void{}
 		}
 	}
 	return results
@@ -162,4 +163,13 @@ func getAPIGroup(apiVersion string) string {
 		return strings.Split(apiVersion, "/")[0]
 	}
 	return ""
+}
+
+// getUniqueKinds given a set of kinds, it returns unique set of kinds
+func getUniqueKinds(kinds graph.Kinds) []string {
+	uniqueKinds := make([]string, 0)
+	for kind, _ := range kinds {
+		uniqueKinds = append(uniqueKinds, kind)
+	}
+	return uniqueKinds
 }

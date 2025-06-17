@@ -32,7 +32,7 @@ type ResourceInfo struct {
 	Namespace  string
 }
 
-type Kinds []string
+type Kinds map[string]Void
 type GroupedResourceKinds map[string]Kinds
 
 type ResourceInclusionEntry struct {
@@ -79,7 +79,7 @@ func NewQueryServer(restConfig *rest.Config, trackingMethod string) (*queryServe
 	executor := core.GetQueryExecutorInstance(provider)
 	if executor == nil {
 		os.Exit(1)
-	}-;
+	}
 	return &queryServer{
 		Provider: provider,
 		Executor: executor,
