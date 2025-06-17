@@ -114,10 +114,10 @@ func runQueryExecutor() error {
 	for _, argoAppResource := range argoAppResources {
 		log.Infof("Querying Argo CD application '%v'", argoAppResource)
 		appChildren, err := queryServer.GetApplicationChildResources(argoAppResource.Name, "")
-		log.Infof("Children of Argo CD application '%s': %v", argoAppResource.Name, appChildren)
 		if err != nil {
 			return err
 		}
+		log.Infof("Children of Argo CD application '%s': %v", argoAppResource.Name, appChildren)
 		for appChild, _ := range appChildren {
 			allAppChildren = append(allAppChildren, appChild)
 		}
@@ -147,8 +147,7 @@ func mergeResourceInfo(input []graph.ResourceInfo) graph.GroupedResourceKinds {
 			continue
 		}
 		apiGroup := getAPIGroup(resourceInfo.APIVersion)
-		_, ok := results[apiGroup]
-		if !ok {
+		if _, found := results[apiGroup]; !found {
 			results[apiGroup] = map[string]graph.Void{
 				resourceInfo.Kind: {},
 			}
