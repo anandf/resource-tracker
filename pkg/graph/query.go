@@ -98,10 +98,14 @@ func (q *queryServer) GetApplicationChildResources(name, namespace string) (Reso
 
 // getChildren returns the immediate direct child of a given node by doing a graph query.
 func (q *queryServer) getChildren(parentResourceInfo *ResourceInfo) ([]*ResourceInfo, error) {
+	unambiguousKind := parentResourceInfo.Kind
+	if parentResourceInfo.APIVersion == "v1" {
+		unambiguousKind = fmt.Sprintf("%s.%s", "core", parentResourceInfo.Kind)
+	}
 	// Get the query string
 	queryStr := fmt.Sprintf("MATCH (p: %s) -> (c) RETURN c.kind, c.apiVersion, c.metadata.namespace", parentResourceInfo.Kind)
 	if parentResourceInfo.Name != "" {
-		queryStr = fmt.Sprintf("MATCH (p: %s{name:\"%s\"}) -> (c) RETURN c.kind, c.apiVersion, c.metadata.namespace", parentResourceInfo.Kind, parentResourceInfo.Name)
+		queryStr = fmt.Sprintf("MATCH (p: %s{name:\"%s\"}) -> (c) RETURN c.kind, c.apiVersion, c.metadata.namespace", unambiguousKind, parentResourceInfo.Name)
 	}
 	queryResult, err := q.executeQuery(queryStr, parentResourceInfo.Namespace)
 	if err != nil {
