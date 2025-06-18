@@ -24,6 +24,7 @@ import (
 var applicationName string
 var applicationNamespace string
 var trackingMethod string
+var globalQuery *bool
 
 // newRunQueryCommand implements "runQuery" command which executes a cyphernetes graph query against a given kubeconfig
 func newRunQueryCommand() *cobra.Command {
@@ -59,6 +60,7 @@ func newRunQueryCommand() *cobra.Command {
 	runQueryCmd.Flags().StringVar(&trackingMethod, "tracking-method", "label", "either label or annotation tracking used by Argo CD")
 	runQueryCmd.Flags().StringVar(&applicationName, "app-name", "", "if only specific application resources needs to be tracked, by default all applications ")
 	runQueryCmd.Flags().StringVar(&applicationNamespace, "app-namespace", "", "either label or annotation tracking used by Argo CD")
+	globalQuery = runQueryCmd.Flags().Bool("global-query", true, "perform graph query without listing applications and finding children for each application")
 	return runQueryCmd
 }
 
@@ -91,35 +93,46 @@ func runQueryExecutor() error {
 		return err
 	}
 	var argoAppResources []graph.ResourceInfo
-
-	list, err := dynamicClient.Resource(schema.GroupVersionResource{
-		Group:    "argoproj.io",
-		Version:  "v1alpha1",
-		Resource: "applications",
-	}).Namespace(applicationNamespace).List(context.Background(), v1.ListOptions{})
-	if err != nil {
-		return err
-	}
-	for _, obj := range list.Items {
-		if len(applicationName) > 0 {
-			if applicationName == obj.GetName() {
-				argoAppResources = append(argoAppResources, graph.ResourceInfo{Kind: obj.GetKind(), Name: obj.GetName(), Namespace: obj.GetNamespace()})
-				break
-			}
-		} else {
-			argoAppResources = append(argoAppResources, graph.ResourceInfo{Kind: obj.GetKind(), Name: obj.GetName(), Namespace: obj.GetNamespace()})
-		}
-	}
 	var allAppChildren []graph.ResourceInfo
-	for _, argoAppResource := range argoAppResources {
-		log.Infof("Querying Argo CD application '%v'", argoAppResource)
-		appChildren, err := queryServer.GetApplicationChildResources(argoAppResource.Name, "")
+	if *globalQuery {
+		log.Infof("Querying Argo CD application globally for application '%s'...", applicationName)
+		appChildren, err := queryServer.GetApplicationChildResources(applicationName, "")
 		if err != nil {
 			return err
 		}
-		log.Infof("Children of Argo CD application '%s': %v", argoAppResource.Name, appChildren)
+		log.Infof("Children of Argo CD application globally for application '%s': %v", applicationName, appChildren)
 		for appChild, _ := range appChildren {
 			allAppChildren = append(allAppChildren, appChild)
+		}
+	} else {
+		list, err := dynamicClient.Resource(schema.GroupVersionResource{
+			Group:    "argoproj.io",
+			Version:  "v1alpha1",
+			Resource: "applications",
+		}).Namespace(applicationNamespace).List(context.Background(), v1.ListOptions{})
+		if err != nil {
+			return err
+		}
+		for _, obj := range list.Items {
+			if len(applicationName) > 0 {
+				if applicationName == obj.GetName() {
+					argoAppResources = append(argoAppResources, graph.ResourceInfo{Kind: obj.GetKind(), Name: obj.GetName(), Namespace: obj.GetNamespace()})
+					break
+				}
+			} else {
+				argoAppResources = append(argoAppResources, graph.ResourceInfo{Kind: obj.GetKind(), Name: obj.GetName(), Namespace: obj.GetNamespace()})
+			}
+		}
+		for _, argoAppResource := range argoAppResources {
+			log.Infof("Querying Argo CD application '%v'", argoAppResource)
+			appChildren, err := queryServer.GetApplicationChildResources(argoAppResource.Name, "")
+			if err != nil {
+				return err
+			}
+			log.Infof("Children of Argo CD application '%s': %v", argoAppResource.Name, appChildren)
+			for appChild, _ := range appChildren {
+				allAppChildren = append(allAppChildren, appChild)
+			}
 		}
 	}
 	resourceInclusion := mergeResourceInfo(allAppChildren)
