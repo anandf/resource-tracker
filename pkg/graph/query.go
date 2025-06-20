@@ -3,6 +3,7 @@ package graph
 import (
 	"fmt"
 	"os"
+	"reflect"
 	"strings"
 
 	"github.com/avitaltamir/cyphernetes/pkg/core"
@@ -18,9 +19,12 @@ const (
 	AnnotationTracking = "$.metadata.annotations.argocd\\.argoproj\\.io/tracking-id"
 )
 
-type queryServer struct {
-	Executor *core.QueryExecutor
-	Provider provider.Provider
+type QueryServer struct {
+	Executor            *core.QueryExecutor
+	Provider            provider.Provider
+	FieldAMatchCriteria string
+	Tracker             string
+	Comparison          core.ComparisonType
 }
 
 type Void struct{}
@@ -41,9 +45,9 @@ type ResourceInclusionEntry struct {
 	Clusters  []string `json:"clusters,omitempty"`
 }
 
-func NewQueryServer(restConfig *rest.Config, trackingMethod string) (*queryServer, error) {
+func NewQueryServer(restConfig *rest.Config, trackingMethod string) (*QueryServer, error) {
 	// Create the API server provider
-	provider, err := apiserver.NewAPIServerProviderWithOptions(&apiserver.APIServerProviderConfig{
+	p, err := apiserver.NewAPIServerProviderWithOptions(&apiserver.APIServerProviderConfig{
 		Kubeconfig: restConfig,
 		DryRun:     false,
 		QuietMode:  true,
@@ -52,16 +56,16 @@ func NewQueryServer(restConfig *rest.Config, trackingMethod string) (*queryServe
 		return nil, err
 	}
 
-	fieldAMatchCriteria := LabelTracking
 	tracker := "LBL"
+	fieldAMatchCriteria := LabelTracking
 	comparison := core.ExactMatch
 	if trackingMethod == "annotation" {
-		fieldAMatchCriteria = AnnotationTracking
 		tracker = "ANN"
+		fieldAMatchCriteria = AnnotationTracking
 		comparison = core.StringContains
 	}
 
-	for _, knownResourceKind := range provider.(*apiserver.APIServerProvider).GetKnownResourceKinds() {
+	for _, knownResourceKind := range p.(*apiserver.APIServerProvider).GetKnownResourceKinds() {
 		core.AddRelationshipRule(core.RelationshipRule{
 			KindA:        strings.ToLower(knownResourceKind),
 			KindB:        "applications",
@@ -76,18 +80,21 @@ func NewQueryServer(restConfig *rest.Config, trackingMethod string) (*queryServe
 		})
 	}
 	// Create query executor with the provider
-	executor := core.GetQueryExecutorInstance(provider)
+	executor := core.GetQueryExecutorInstance(p)
 	if executor == nil {
 		os.Exit(1)
 	}
-	return &queryServer{
-		Provider: provider,
-		Executor: executor,
+	return &QueryServer{
+		Provider:            p,
+		Executor:            executor,
+		Tracker:             tracker,
+		FieldAMatchCriteria: fieldAMatchCriteria,
+		Comparison:          comparison,
 	}, nil
 
 }
 
-func (q *queryServer) GetApplicationChildResources(name, namespace string) (ResourceInfoSet, error) {
+func (q *QueryServer) GetApplicationChildResources(name, namespace string) (ResourceInfoSet, error) {
 	allLevelChildren := make(ResourceInfoSet)
 	allLevelChildren, err := q.depthFirstTraversal(&ResourceInfo{Kind: "application", Name: name, Namespace: namespace}, allLevelChildren)
 	if err != nil {
@@ -97,7 +104,7 @@ func (q *queryServer) GetApplicationChildResources(name, namespace string) (Reso
 }
 
 // getChildren returns the immediate direct child of a given node by doing a graph query.
-func (q *queryServer) getChildren(parentResourceInfo *ResourceInfo) ([]*ResourceInfo, error) {
+func (q *QueryServer) getChildren(parentResourceInfo *ResourceInfo) ([]*ResourceInfo, error) {
 	unambiguousKind := parentResourceInfo.Kind
 	if parentResourceInfo.APIVersion == "v1" {
 		unambiguousKind = fmt.Sprintf("%s.%s", "core", parentResourceInfo.Kind)
@@ -119,7 +126,7 @@ func (q *queryServer) getChildren(parentResourceInfo *ResourceInfo) ([]*Resource
 }
 
 // executeQuery executes the graph query using graph library
-func (q *queryServer) executeQuery(queryStr, namespace string) (*core.QueryResult, error) {
+func (q *QueryServer) executeQuery(queryStr, namespace string) (*core.QueryResult, error) {
 	// Parse the query to get an AST
 	ast, err := core.ParseQuery(queryStr)
 	if err != nil {
@@ -135,7 +142,7 @@ func (q *queryServer) executeQuery(queryStr, namespace string) (*core.QueryResul
 }
 
 // depthFirstTraversal recursively traverses the resource tree using a DFS approach.
-func (q *queryServer) depthFirstTraversal(info *ResourceInfo, visitedNodes ResourceInfoSet) (ResourceInfoSet, error) {
+func (q *QueryServer) depthFirstTraversal(info *ResourceInfo, visitedNodes ResourceInfoSet) (ResourceInfoSet, error) {
 	if info == nil {
 		return visitedNodes, nil
 	}
@@ -194,4 +201,45 @@ func extractResourceInfo(queryResult *core.QueryResult, variable string) ([]*Res
 		resourceInfoList = append(resourceInfoList, &resourceInfo)
 	}
 	return resourceInfoList, nil
+}
+
+// AddRuleForResourceKind adds the rule for a new resource kind that was added
+func (q *QueryServer) AddRuleForResourceKind(resourceKind string) {
+	core.AddRelationshipRule(core.RelationshipRule{
+		KindA:        strings.ToLower(resourceKind),
+		KindB:        "applications",
+		Relationship: core.RelationshipType(strings.ToUpper(fmt.Sprintf("%s_%s_%s", "ARGOAPP_OWN", q.Tracker, resourceKind))),
+		MatchCriteria: []core.MatchCriterion{
+			{
+				FieldA:         q.FieldAMatchCriteria,
+				FieldB:         "$.metadata.name",
+				ComparisonType: q.Comparison,
+			},
+		},
+	})
+}
+
+func (k *Kinds) Equal(other *Kinds) bool {
+	if len(*k) != len(*other) {
+		return false
+	}
+	for key := range *k {
+		if _, ok := (*other)[key]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+func (r *ResourceInclusionEntry) Equal(other *ResourceInclusionEntry) bool {
+	if !reflect.DeepEqual(r.APIGroups, other.APIGroups) || !reflect.DeepEqual(r.Clusters, other.Clusters) || len(r.Kinds) != len(other.Kinds) {
+		return false
+	}
+	currentKindsStr := fmt.Sprintf("%v", r.Kinds)
+	for _, otherKind := range other.Kinds {
+		if !strings.Contains(currentKindsStr, otherKind) {
+			return false
+		}
+	}
+	return true
 }

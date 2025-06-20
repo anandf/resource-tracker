@@ -81,6 +81,7 @@ func runResourceTrackerLoop(cfg *ResourceTrackerConfig) error {
 	}
 	return nil
 }
+
 func runResourceTracker(cfg *ResourceTrackerConfig) {
 	log.Info("Starting resource tracking process...")
 	apps, err := cfg.ArgoClient.ListApplications()
