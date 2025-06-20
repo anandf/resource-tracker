@@ -154,7 +154,7 @@ func initArgoApplicationInformer(cfg *RunQueryConfig) error {
 	_, err := informer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj interface{}) {
 			unstructuredObj := obj.(*unstructured.Unstructured)
-			log.Infof("Object Added: %s/%s\n", unstructuredObj.GetNamespace(), unstructuredObj.GetName())
+			log.Infof("Object Added: %s/%s", unstructuredObj.GetNamespace(), unstructuredObj.GetName())
 			err := runQueryExecutor(cfg)
 			if err != nil {
 				log.Error(err)
@@ -163,7 +163,7 @@ func initArgoApplicationInformer(cfg *RunQueryConfig) error {
 		UpdateFunc: func(oldObj, newObj interface{}) {
 			oldUnstructured := oldObj.(*unstructured.Unstructured)
 			newUnstructured := newObj.(*unstructured.Unstructured)
-			log.Infof("Object Updated: %s/%s (ResourceVersion: %s -> %s)\n",
+			log.Infof("Object Updated: %s/%s (ResourceVersion: %s -> %s)",
 				newUnstructured.GetNamespace(), newUnstructured.GetName(),
 				oldUnstructured.GetResourceVersion(), newUnstructured.GetResourceVersion())
 			err := runQueryExecutor(cfg)
@@ -173,7 +173,7 @@ func initArgoApplicationInformer(cfg *RunQueryConfig) error {
 		},
 		DeleteFunc: func(obj interface{}) {
 			unstructuredObj := obj.(*unstructured.Unstructured)
-			log.Infof("Object Deleted: %s/%s\n", unstructuredObj.GetNamespace(), unstructuredObj.GetName())
+			log.Infof("Object Deleted: %s/%s", unstructuredObj.GetNamespace(), unstructuredObj.GetName())
 			err := runQueryExecutor(cfg)
 			if err != nil {
 				log.Error(err)
@@ -281,11 +281,30 @@ func runQueryExecutor(cfg *RunQueryConfig) error {
 		}
 	}
 	groupedKinds := mergeResourceInfo(allAppChildren)
-	if !isGroupedResourceKindsEqual(previousGroupedKinds, groupedKinds) {
-		log.Infof("changes detected in resource inclusions, updating the argocd-cm configmap")
-		err := updateResourceInclusion(cfg, &groupedKinds)
+	if !*cfg.directUpdateEnabled {
+		if !isGroupedResourceKindsEqual(previousGroupedKinds, groupedKinds) {
+			log.Info("direct update or argocd-cm is disabled, printing the output on terminal")
+			resourceInclusionString, err := getResourceInclusionsString(&groupedKinds)
+			if err != nil {
+				return err
+			}
+			fmt.Printf("resource.inclusions: |\n%sresource.exclusions: ''\n", resourceInclusionString)
+		} else {
+			log.Infof("no changes detected in previously computed resource inclusions and current computed resource inclusions")
+		}
+	} else {
+		existingGroupKinds, err := getCurrentGroupedKindsFromCM(cfg)
 		if err != nil {
 			return err
+		}
+		if !isGroupedResourceKindsEqual(existingGroupKinds, groupedKinds) {
+			log.Infof("changes detected in resource inclusions, updating the argocd-cm configmap")
+			err = updateResourceInclusion(cfg, &groupedKinds)
+			if err != nil {
+				return err
+			}
+		} else {
+			log.Info("no changes detected in existing resource inclusions in argocd-cm configmap")
 		}
 	}
 	previousGroupedKinds = groupedKinds
@@ -345,20 +364,6 @@ func isGroupedResourceKindsEqual(previous, current graph.GroupedResourceKinds) b
 	return true
 }
 
-// isResourceInclusionEntriesEqual validates if existing resource inclusion entries from argocd-cm and
-// current computed resource inclusion entries are equal.
-func isResourceInclusionEntriesEqual(existing, current []graph.ResourceInclusionEntry) bool {
-	if len(existing) != len(current) {
-		return false
-	}
-	for i := 0; i < len(existing); i++ {
-		if !existing[i].Equal(&current[i]) {
-			return false
-		}
-	}
-	return true
-}
-
 // updateResourceInclusion updates the resource.inclusions and resource.exclusions settings in argocd-cm configmap
 func updateResourceInclusion(cfg *RunQueryConfig, resourceInclusion *graph.GroupedResourceKinds) error {
 	ctx := context.Background()
@@ -367,39 +372,9 @@ func updateResourceInclusion(cfg *RunQueryConfig, resourceInclusion *graph.Group
 		if err != nil {
 			return fmt.Errorf("error fetching ConfigMap: %v", err)
 		}
-
-		includedResources := make([]graph.ResourceInclusionEntry, 0, len(*resourceInclusion))
-		for group, kinds := range *resourceInclusion {
-			includedResources = append(includedResources, graph.ResourceInclusionEntry{
-				APIGroups: []string{group},
-				Kinds:     getUniqueKinds(kinds),
-				Clusters:  []string{"*"},
-			})
-		}
-		out, err := yaml.Marshal(includedResources)
+		resourceInclusionString, err := getResourceInclusionsString(resourceInclusion)
 		if err != nil {
 			return err
-		}
-		// include resources that are managed by Argo CD.
-		resourceInclusionString := string(out)
-		if !*cfg.directUpdateEnabled {
-			log.Info("direct update or argocd-cm is disabled, printing the output on terminal")
-			fmt.Printf("resource.inclusions: |\n%sresource.exclusions: ''\n", resourceInclusionString)
-			return nil
-		}
-		existingResourceInclusionsInCMStr, found, err := unstructured.NestedString(argocdCM.Object, "data", "resource.inclusions")
-		if err != nil {
-			return err
-		}
-		if found {
-			var existingResourceInclusionsInCM []graph.ResourceInclusionEntry
-			err = yaml.Unmarshal([]byte(existingResourceInclusionsInCMStr), &existingResourceInclusionsInCM)
-			if err == nil && isResourceInclusionEntriesEqual(existingResourceInclusionsInCM, includedResources) {
-				log.Info("resource inclusions is already set to required value. skipping update")
-				// exclude all resources that are not explicitly excluded.
-				unstructured.RemoveNestedField(argocdCM.Object, "data", "resource.exclusions")
-				return nil
-			}
 		}
 		if err := unstructured.SetNestedField(argocdCM.Object, resourceInclusionString, "data", "resource.inclusions"); err != nil {
 			return fmt.Errorf("failed to set resource.inclusions value: %v", err)
@@ -418,6 +393,59 @@ func updateResourceInclusion(cfg *RunQueryConfig, resourceInclusion *graph.Group
 	})
 }
 
+// getResourceInclusionsString returns string representation of resource inclusions
+func getResourceInclusionsString(resourceInclusion *graph.GroupedResourceKinds) (string, error) {
+	includedResources := make([]graph.ResourceInclusionEntry, 0, len(*resourceInclusion))
+	for group, kinds := range *resourceInclusion {
+		includedResources = append(includedResources, graph.ResourceInclusionEntry{
+			APIGroups: []string{group},
+			Kinds:     getUniqueKinds(kinds),
+			Clusters:  []string{"*"},
+		})
+	}
+	out, err := yaml.Marshal(includedResources)
+	if err != nil {
+		return "", err
+	}
+	// include resources that are managed by Argo CD.
+	return string(out), nil
+}
+
+// getCurrentGroupedKindsFromCM reads the resource.inclusions from argocd-cm config map and converts it to GroupedResourceKinds
+func getCurrentGroupedKindsFromCM(cfg *RunQueryConfig) (graph.GroupedResourceKinds, error) {
+	argocdCM, err := dynamicClient.Resource(configMapGVR).Namespace(cfg.argocdNamespace).Get(context.Background(), "argocd-cm", v1.GetOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("error fetching ConfigMap: %v", err)
+	}
+	results := make(graph.GroupedResourceKinds)
+	existingResourceInclusionsInCMStr, found, err := unstructured.NestedString(argocdCM.Object, "data", "resource.inclusions")
+	if err != nil {
+		return nil, err
+	}
+	if found {
+		var existingResourceInclusionsInCM []graph.ResourceInclusionEntry
+		err = yaml.Unmarshal([]byte(existingResourceInclusionsInCMStr), &existingResourceInclusionsInCM)
+		if err != nil {
+			return results, nil
+		}
+		for _, resourceInclusion := range existingResourceInclusionsInCM {
+			for _, apiGroup := range resourceInclusion.APIGroups {
+				for _, kind := range resourceInclusion.Kinds {
+					if results[apiGroup] == nil {
+						results[apiGroup] = make(map[string]graph.Void)
+					}
+					results[apiGroup][kind] = graph.Void{}
+				}
+				// break after the first item in apiGroup list
+				break
+			}
+		}
+	} else {
+		log.Infof("resource inclusions not found in argocd-cm in namespace %s ", cfg.argocdNamespace)
+	}
+	return results, nil
+}
+
 // initCRDInformer initializes the shared informers for Argo CD Application objects.
 // whenever a change to any Argo Application is detected, the graph query is executed and the resource inclusion
 // entries are computed.
@@ -432,7 +460,7 @@ func initCRDInformer() error {
 	_, err := informer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj interface{}) {
 			unstructuredObj := obj.(*unstructured.Unstructured)
-			log.Infof("Object Added: %s/%s\n", unstructuredObj.GetNamespace(), unstructuredObj.GetName())
+			log.Infof("Object Added: %s/%s", unstructuredObj.GetNamespace(), unstructuredObj.GetName())
 			queryServer.AddRuleForResourceKind(unstructuredObj.GetKind())
 		},
 	})
