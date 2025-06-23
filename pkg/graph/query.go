@@ -103,6 +103,15 @@ func (q *QueryServer) GetApplicationChildResources(name, namespace string) (Reso
 	return allLevelChildren, nil
 }
 
+func (q *QueryServer) GetNestedChildResources(resource *ResourceInfo) (ResourceInfoSet, error) {
+	allLevelChildren := make(ResourceInfoSet)
+	allLevelChildren, err := q.depthFirstTraversal(resource, allLevelChildren)
+	if err != nil {
+		return nil, err
+	}
+	return allLevelChildren, nil
+}
+
 // getChildren returns the immediate direct child of a given node by doing a graph query.
 func (q *QueryServer) getChildren(parentResourceInfo *ResourceInfo) ([]*ResourceInfo, error) {
 	unambiguousKind := parentResourceInfo.Kind

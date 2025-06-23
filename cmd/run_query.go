@@ -2,10 +2,12 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"os/signal"
+	"regexp"
 	"strings"
 	"syscall"
 	"time"
@@ -17,6 +19,7 @@ import (
 	log "github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -40,6 +43,11 @@ type RunQueryConfig struct {
 	argocdNamespace      string
 	directUpdateEnabled  *bool
 }
+
+const (
+	ConditionTypeExcludedResourceWarning = "ConditionTypeExcludedResourceWarning"
+	ExcludedResourceWarningMsgPattern    = "([a-zA-Z]*)/([a-zA-Z0-9.]+) ([a-zA-Z0-9-_.]+)"
+)
 
 var (
 	configMapGVR = schema.GroupVersionResource{
@@ -92,7 +100,19 @@ func newRunQueryCommand() *cobra.Command {
 			}
 			log.SetLevel(level)
 			core.LogLevel = cfg.logLevel
-			return runQueryExecutorLoop(cfg)
+			err = initQueryServer(cfg)
+			if err != nil {
+				return err
+			}
+			if cfg.checkInterval == 0 {
+				return runQueryExecutor(cfg)
+			} else {
+				err = initArgoApplicationInformer(cfg)
+				if err != nil {
+					return err
+				}
+			}
+			return runQueryExecutor(cfg)
 		},
 	}
 	runQueryCmd.Flags().StringVar(&cfg.logLevel, "loglevel", env.GetStringVal("RESOURCE_TRACKER_LOGLEVEL", "info"), "set the loglevel to one of trace|debug|info|warn|error")
@@ -155,8 +175,7 @@ func initArgoApplicationInformer(cfg *RunQueryConfig) error {
 		AddFunc: func(obj interface{}) {
 			unstructuredObj := obj.(*unstructured.Unstructured)
 			log.Infof("Object Added: %s/%s", unstructuredObj.GetNamespace(), unstructuredObj.GetName())
-			err := runQueryExecutor(cfg)
-			if err != nil {
+			if err := handleEvent(cfg, unstructuredObj); err != nil {
 				log.Error(err)
 			}
 		},
@@ -166,16 +185,14 @@ func initArgoApplicationInformer(cfg *RunQueryConfig) error {
 			log.Infof("Object Updated: %s/%s (ResourceVersion: %s -> %s)",
 				newUnstructured.GetNamespace(), newUnstructured.GetName(),
 				oldUnstructured.GetResourceVersion(), newUnstructured.GetResourceVersion())
-			err := runQueryExecutor(cfg)
-			if err != nil {
+			if err := handleEvent(cfg, newUnstructured); err != nil {
 				log.Error(err)
 			}
 		},
 		DeleteFunc: func(obj interface{}) {
 			unstructuredObj := obj.(*unstructured.Unstructured)
 			log.Infof("Object Deleted: %s/%s", unstructuredObj.GetNamespace(), unstructuredObj.GetName())
-			err := runQueryExecutor(cfg)
-			if err != nil {
+			if err := handleEvent(cfg, unstructuredObj); err != nil {
 				log.Error(err)
 			}
 		},
@@ -207,34 +224,11 @@ func initArgoApplicationInformer(cfg *RunQueryConfig) error {
 	return nil
 }
 
-// runQueryExecutorLoop runs the graph query continuously in a loop,
-// executes the graph query and updates the argocd-cm configmap whenever there is a change detected in any Argo CD
-// Application and check interval duration has passed.
-func runQueryExecutorLoop(cfg *RunQueryConfig) error {
-	err := initQueryServer(cfg)
-	if err != nil {
-		return err
-	}
-	if cfg.checkInterval == 0 {
-		return runQueryExecutor(cfg)
-	} else {
-		err = initArgoApplicationInformer(cfg)
-		if err != nil {
-			return err
-		}
-		//err = initCRDInformer()
-		//if err != nil {
-		//	return err
-		//}
-	}
-	return nil
-}
-
 // runQueryExecutor runs the graph query, computes the resources managed via Argo CD and update the resource.inclusions
 // settings in the argocd-cm config map if it detects any new changes compared to the previous computed value or if its
 // value is different from what is present in the argocd-cm config map.
 // if the check interval time has not passed since the previous run, then the method returns without executing any queries.
-func runQueryExecutor(cfg *RunQueryConfig) error {
+func runQueryExecutor(cfg *RunQueryConfig, additionalResources ...graph.ResourceInfo) error {
 	if !lastRunTime.IsZero() && time.Since(lastRunTime) < cfg.checkInterval {
 		log.Info("skipping query executor due to last run not lapsed the check interval")
 		return nil
@@ -280,6 +274,10 @@ func runQueryExecutor(cfg *RunQueryConfig) error {
 			}
 		}
 	}
+	for _, resource := range additionalResources {
+		allAppChildren = append(allAppChildren, resource)
+	}
+
 	groupedKinds := mergeResourceInfo(allAppChildren)
 	if !*cfg.directUpdateEnabled {
 		if !isGroupedResourceKindsEqual(previousGroupedKinds, groupedKinds) {
@@ -489,4 +487,77 @@ func initCRDInformer() error {
 	log.Info("Received termination signal, stopping informer...")
 	close(stopCh)
 	return nil
+}
+
+// handleEvent handles the add/update/delete event to any Argo Application
+func handleEvent(cfg *RunQueryConfig, unstructuredObj *unstructured.Unstructured) error {
+	missingResources, err := getMissingResources(unstructuredObj)
+	if err != nil {
+		return err
+	}
+	return runQueryExecutor(cfg, missingResources...)
+}
+
+// getMissingResources returns the resources that are missing to be managed via an Argo Application
+func getMissingResources(obj *unstructured.Unstructured) ([]graph.ResourceInfo, error) {
+	statusConditions, found, err := unstructured.NestedSlice(obj.Object, "status", "conditions")
+	if err != nil {
+		return nil, err
+	}
+	if !found {
+		return nil, nil
+	}
+	conditions, err := getExcludedResourceConditions(statusConditions)
+	if err != nil {
+		return nil, err
+	}
+
+	missingResources, err := getResourcesFromConditions(conditions)
+	if err != nil {
+		return nil, err
+	}
+	return missingResources, nil
+}
+
+// getExcludedResourceConditions returns the ConditionTypeExcludedResourceWarning from status.conditions of an Argo Application object
+func getExcludedResourceConditions(statusConditions []interface{}) ([]metav1.Condition, error) {
+	resultConditions := make([]metav1.Condition, 0, len(statusConditions))
+	// Marshal and Unmarshal to convert the map[string]interface{} to a Condition struct and add it only
+	// if its of type ConditionTypeExcludedResourceWarning
+	for _, conditionMap := range statusConditions {
+		jsonBytes, err := json.Marshal(conditionMap)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling condition map: %w", err)
+		}
+		var condition metav1.Condition
+		if err := json.Unmarshal(jsonBytes, &condition); err != nil {
+			return nil, fmt.Errorf("error unmarshaling condition: %w", err)
+		}
+		if condition.Type == "ConditionTypeExcludedResourceWarning" {
+			resultConditions = append(resultConditions, condition)
+		}
+	}
+	return resultConditions, nil
+}
+
+// getResourcesFromConditions returns the resources that are missing to be managed reported in status.conditions of an Argo Application
+func getResourcesFromConditions(conditions []metav1.Condition) ([]graph.ResourceInfo, error) {
+	regex := regexp.MustCompile(ExcludedResourceWarningMsgPattern)
+	results := make([]graph.ResourceInfo, 0, len(conditions))
+	for _, condition := range conditions {
+		if condition.Type == ConditionTypeExcludedResourceWarning {
+			matches := regex.FindStringSubmatch(condition.Message)
+			if len(matches) > 3 {
+				group := matches[1]
+				kind := matches[2]
+				resourceName := matches[3]
+				results = append(results, graph.ResourceInfo{
+					APIVersion: group,
+					Kind:       kind,
+					Name:       resourceName,
+				})
+			}
+		}
+	}
+	return results, nil
 }
