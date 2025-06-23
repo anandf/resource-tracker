@@ -95,12 +95,7 @@ func NewQueryServer(restConfig *rest.Config, trackingMethod string) (*QueryServe
 }
 
 func (q *QueryServer) GetApplicationChildResources(name, namespace string) (ResourceInfoSet, error) {
-	allLevelChildren := make(ResourceInfoSet)
-	allLevelChildren, err := q.depthFirstTraversal(&ResourceInfo{Kind: "application", Name: name, Namespace: namespace}, allLevelChildren)
-	if err != nil {
-		return nil, err
-	}
-	return allLevelChildren, nil
+	return q.GetNestedChildResources(&ResourceInfo{Kind: "application", Name: name, Namespace: namespace})
 }
 
 func (q *QueryServer) GetNestedChildResources(resource *ResourceInfo) (ResourceInfoSet, error) {
