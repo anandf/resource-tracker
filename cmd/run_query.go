@@ -47,6 +47,7 @@ type RunQueryConfig struct {
 const (
 	ConditionTypeExcludedResourceWarning = "ConditionTypeExcludedResourceWarning"
 	ExcludedResourceWarningMsgPattern    = "([a-zA-Z]*)/([a-zA-Z0-9.]+) ([a-zA-Z0-9-_.]+)"
+	DefaultCheckInterval                 = 5 * time.Minute
 )
 
 var (
@@ -124,7 +125,7 @@ func newRunQueryCommand() *cobra.Command {
 	cfg.globalQuery = runQueryCmd.Flags().Bool("global", true, "perform graph query without listing applications and finding children for each application")
 	cfg.once = runQueryCmd.Flags().Bool("once", false, "run the loop only once")
 	cfg.directUpdateEnabled = runQueryCmd.Flags().Bool("direct-update", false, "if enabled updates the argocd-cm directly, else prints the output on screen")
-	runQueryCmd.Flags().DurationVar(&cfg.checkInterval, "interval", 2*time.Minute, "interval for how often to check for updates")
+	runQueryCmd.Flags().DurationVar(&cfg.checkInterval, "interval", DefaultCheckInterval, "interval for how often to check for updates")
 	return runQueryCmd
 }
 
@@ -274,11 +275,15 @@ func runQueryExecutor(cfg *RunQueryConfig, additionalResources ...graph.Resource
 			}
 		}
 	}
-	for _, resource := range additionalResources {
-		allAppChildren = append(allAppChildren, resource)
-	}
-
 	groupedKinds := mergeResourceInfo(allAppChildren)
+	// Check if additional resources are missing, if so add it.
+	for _, resource := range additionalResources {
+		if kindMap, ok := groupedKinds[resource.APIVersion]; !ok && kindMap == nil {
+			groupedKinds[resource.APIVersion] = graph.Kinds{resource.Kind: graph.Void{}}
+		} else {
+			groupedKinds[resource.APIVersion][resource.Kind] = graph.Void{}
+		}
+	}
 	if !*cfg.directUpdateEnabled {
 		if !isGroupedResourceKindsEqual(previousGroupedKinds, groupedKinds) {
 			log.Info("direct update or argocd-cm is disabled, printing the output on terminal")
