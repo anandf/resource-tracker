@@ -1,0 +1,56 @@
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: test-apps-set
+spec:
+  generators:
+    - list: # Simple list generator
+        elements:
+          - appNum: '01'
+            namespaceSuffix: 'ns-a'
+          - appNum: '02'
+            namespaceSuffix: 'ns-b'
+          - appNum: '03'
+            namespaceSuffix: 'ns-c'
+          - appNum: '04'
+            namespaceSuffix: 'ns-d'
+          - appNum: '05'
+            namespaceSuffix: 'ns-e'
+          - appNum: '06'
+            namespaceSuffix: 'ns-f'
+          - appNum: '07'
+            namespaceSuffix: 'ns-g'
+          - appNum: '08'
+            namespaceSuffix: 'ns-h'
+          - appNum: '09'
+            namespaceSuffix: 'ns-i'
+          - appNum: '10'
+            namespaceSuffix: 'ns-j'
+          - appNum: '11'
+            namespaceSuffix: 'ns-k'
+          - appNum: '12'
+            namespaceSuffix: 'ns-l'
+          - appNum: '13'
+            namespaceSuffix: 'ns-m'
+          - appNum: '14'
+            namespaceSuffix: 'ns-n'
+          - appNum: '15'
+            namespaceSuffix: 'ns-o'
+  template:
+    metadata:
+      name: 'test-app-{{appNum}}'
+    spec:
+      project: default
+      source:
+        repoURL: https://github.com/Mangaal/argocd-yaml
+        targetRevision: HEAD
+        path: 'performance' # Path in Git for this specific app's generated manifests
+      destination:
+        server: 'https://kubernetes.default.svc'
+        namespace: 'test-app-{{appNum}}-{{namespaceSuffix}}'
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=true

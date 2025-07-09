@@ -29,9 +29,10 @@ RUN mkdir -p /usr/local/bin /app/config && \
 
 # Copy built binary from builder stage
 COPY --from=builder /src/argocd-resource-tracker/dist/argocd-resource-tracker /usr/local/bin/
+COPY --from=builder /src/argocd-resource-tracker/dist/argocd-resource-tracker-operator /usr/local/bin/
 
 # Set user permissions
 USER 1000
 
 # Set entrypoint
-ENTRYPOINT ["/sbin/tini", "--", "/usr/local/bin/argocd-resource-tracker"]
+ENTRYPOINT ["/sbin/tini", "--", "/usr/local/bin/argocd-resource-tracker-operator"]

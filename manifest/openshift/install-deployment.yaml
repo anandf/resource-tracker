@@ -1,0 +1,49 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: openshift-gitops-resource-tracker
+  namespace: openshift-gitops
+  labels:
+    app: openshift-gitops-resource-tracker
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: openshift-gitops-resource-tracker
+  template:
+    metadata:
+      labels:
+        app: openshift-gitops-resource-tracker
+    spec:
+      containers:
+        - name: openshift-gitops-resource-tracker
+          image: quay.io/anjoseph/argocd-resource-tracker:latest
+          imagePullPolicy: IfNotPresent
+          args:
+            - run-query
+            - --global
+            - --loglevel
+            - info
+            - --tracking-method
+            - label
+            - --direct-update
+            - "true"
+            - --argocd-namespace
+            - openshift-gitops
+          resources:
+            limits:
+              cpu: "500m"
+              memory: "2Gi"
+            requests:
+              cpu: "250m"
+              memory: "1Gi"
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            seccompProfile:
+              type: RuntimeDefault
+      serviceAccountName: openshift-gitops-argocd-application-controller
