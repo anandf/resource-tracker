@@ -40,7 +40,7 @@ func newRunQueryCommand() *cobra.Command {
 		Use:   "run-query",
 		Short: "Runs the resource-tracker which executes a graph based query to fetch the dependencies",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			log.Infof("%s %s starting [loglevel:%s, interval:%s]",
+			log.Infof("%s %s starting [loglevel:%s]",
 				version.BinaryName(),
 				version.Version(),
 				strings.ToUpper(cfg.logLevel),
@@ -63,7 +63,7 @@ func newRunQueryCommand() *cobra.Command {
 	runQueryCmd.Flags().StringVar(&cfg.kubeConfig, "kubeconfig", "", "full path to kube client configuration, i.e. ~/.kube/config")
 	runQueryCmd.Flags().StringVar(&cfg.trackingMethod, "tracking-method", "label", "either label or annotation tracking used by Argo CD")
 	runQueryCmd.Flags().StringVar(&cfg.applicationName, "app-name", "", "if only specific application resources needs to be tracked, by default all applications ")
-	runQueryCmd.Flags().StringVar(&cfg.applicationNamespace, "app-namespace", "", "either label or annotation tracking used by Argo CD")
+	runQueryCmd.Flags().StringVar(&cfg.applicationNamespace, "app-namespace", "", "namespace for the given application. Default value is empty string indicating cluster scope")
 	runQueryCmd.Flags().StringVar(&cfg.argocdNamespace, "argocd-namespace", "argocd", "namespace where argocd control plane components are running")
 	cfg.globalQuery = runQueryCmd.Flags().Bool("global", true, "perform graph query without listing applications and finding children for each application")
 	return runQueryCmd
@@ -146,5 +146,11 @@ func runQueryExecutor(cfg *RunQueryConfig) error {
 			groupedKinds[resource.APIVersion][resource.Kind] = graph.Void{}
 		}
 	}
+
+	resourceInclusionString, err := graph.GetResourceInclusionsString(&groupedKinds)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("resource.inclusions: |\n%sresource.exclusions: ''\n", resourceInclusionString)
 	return nil
 }

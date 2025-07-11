@@ -34,6 +34,7 @@ type QueryServer struct {
 	FieldAMatchCriteria string
 	Tracker             string
 	Comparison          core.ComparisonType
+	VisitedKinds        map[ResourceInfo]bool
 }
 
 type Void struct{}
@@ -60,22 +61,73 @@ const (
 )
 
 var (
+	ArgoAppGVR = schema.GroupVersionResource{
+		Group:    "argoproj.io",
+		Version:  "v1alpha1",
+		Resource: "applications",
+	}
+	ArgoCDGVR = schema.GroupVersionResource{
+		Group:    "argoproj.io",
+		Version:  "v1beta1",
+		Resource: "argocds",
+	}
 	ConfigMapGVR = schema.GroupVersionResource{
 		Group:    "",
 		Version:  "v1",
 		Resource: "configmaps",
 	}
 
-	ArgoAppGVR = schema.GroupVersionResource{
-		Group:    "argoproj.io",
-		Version:  "v1alpha1",
-		Resource: "applications",
+	SecretGVR = schema.GroupVersionResource{
+		Group:    "",
+		Version:  "v1",
+		Resource: "secrets",
 	}
 
 	CrdGVR = schema.GroupVersionResource{
 		Group:    "apiextensions.k8s.io",
 		Version:  "v1",
 		Resource: "customresourcedefinitions",
+	}
+)
+
+var (
+	blackListedKinds = map[string]bool{
+		"projects":        true,
+		"projectRequests": true,
+		"configmaps":      true,
+		"secrets":         true,
+		"serviceaccounts": true,
+		"pods":            true,
+	}
+
+	leafKinds = map[string]bool{
+		"ConfigMap":      true,
+		"Secret":         true,
+		"ServiceAccount": true,
+		"Namespace":      true,
+	}
+
+	defaultIncludedResources = ResourceInfoSet{
+		ResourceInfo{
+			Kind:       "ConfigMap",
+			APIVersion: "v1",
+		}: Void{},
+		ResourceInfo{
+			Kind:       "Secret",
+			APIVersion: "v1",
+		}: Void{},
+		ResourceInfo{
+			Kind:       "ServiceAccount",
+			APIVersion: "v1",
+		}: Void{},
+		ResourceInfo{
+			Kind:       "Pod",
+			APIVersion: "v1",
+		}: Void{},
+		ResourceInfo{
+			Kind:       "Namespace",
+			APIVersion: "v1",
+		}: Void{},
 	}
 )
 
@@ -100,14 +152,18 @@ func NewQueryServer(restConfig *rest.Config, trackingMethod string) (*QueryServe
 	}
 
 	for _, knownResourceKind := range p.(*apiserver.APIServerProvider).GetKnownResourceKinds() {
-		if knownResourceKind == "projects" || knownResourceKind == "projectrequests" {
+		if blackListedKinds[knownResourceKind] || leafKinds[knownResourceKind] {
 			log.Infof("skipping resource kind: %s", knownResourceKind)
 			continue
 		}
+		relationshipTypeName := strings.ToUpper(fmt.Sprintf("%s_%s_%s", "ARGOAPP_OWN", tracker, knownResourceKind))
+		if strings.Index(relationshipTypeName, ".") != -1 {
+			relationshipTypeName = strings.Replace(relationshipTypeName, ".", "_", -1)
+		}
 		core.AddRelationshipRule(core.RelationshipRule{
 			KindA:        strings.ToLower(knownResourceKind),
-			KindB:        "applications",
-			Relationship: core.RelationshipType(strings.ToUpper(fmt.Sprintf("%s_%s_%s", "ARGOAPP_OWN", tracker, knownResourceKind))),
+			KindB:        "applications.argoproj.io",
+			Relationship: core.RelationshipType(relationshipTypeName),
 			MatchCriteria: []core.MatchCriterion{
 				{
 					FieldA:         fieldAMatchCriteria,
@@ -117,6 +173,7 @@ func NewQueryServer(restConfig *rest.Config, trackingMethod string) (*QueryServe
 			},
 		})
 	}
+	addOpenShiftSpecificRules()
 	// Create query executor with the provider
 	executor := core.GetQueryExecutorInstance(p)
 	if executor == nil {
@@ -128,12 +185,13 @@ func NewQueryServer(restConfig *rest.Config, trackingMethod string) (*QueryServe
 		Tracker:             tracker,
 		FieldAMatchCriteria: fieldAMatchCriteria,
 		Comparison:          comparison,
+		VisitedKinds:        make(map[ResourceInfo]bool),
 	}, nil
 
 }
 
 func (q *QueryServer) GetApplicationChildResources(name, namespace string) (ResourceInfoSet, error) {
-	return q.GetNestedChildResources(&ResourceInfo{Kind: "application", Name: name, Namespace: namespace})
+	return q.GetNestedChildResources(&ResourceInfo{Kind: "applications.argoproj.io", Name: name, Namespace: namespace})
 }
 
 func (q *QueryServer) GetNestedChildResources(resource *ResourceInfo) (ResourceInfoSet, error) {
@@ -142,13 +200,21 @@ func (q *QueryServer) GetNestedChildResources(resource *ResourceInfo) (ResourceI
 	if err != nil {
 		return nil, err
 	}
+	for resInfo, _ := range defaultIncludedResources {
+		allLevelChildren[resInfo] = Void{}
+	}
 	return allLevelChildren, nil
 }
 
 // getChildren returns the immediate direct child of a given node by doing a graph query.
 func (q *QueryServer) getChildren(parentResourceInfo *ResourceInfo) ([]*ResourceInfo, error) {
-	if parentResourceInfo.Kind == "ConfigMap" || parentResourceInfo.Kind == "ServiceAccount" || parentResourceInfo.Kind == "Secret" {
-		log.Infof("skipping getChildren for resource: %v", parentResourceInfo)
+	if leafKinds[parentResourceInfo.Kind] {
+		log.Infof("skipping getChildren for leaf resource: %v", parentResourceInfo)
+		return nil, nil
+	}
+	visitedKindKey := ResourceInfo{Kind: parentResourceInfo.Kind, APIVersion: parentResourceInfo.APIVersion}
+	if _, ok := q.VisitedKinds[visitedKindKey]; ok {
+		log.Infof("skipping getChildren for resource as kind already visited: %v", parentResourceInfo)
 		return nil, nil
 	}
 	unambiguousKind := parentResourceInfo.Kind
@@ -168,6 +234,7 @@ func (q *QueryServer) getChildren(parentResourceInfo *ResourceInfo) ([]*Resource
 	if err != nil {
 		return nil, err
 	}
+	q.VisitedKinds[visitedKindKey] = true
 	return results, nil
 }
 
@@ -350,7 +417,37 @@ func UpdateResourceInclusion(dynamicClient dynamic.Interface, argocdNS string, r
 			log.Warningf("Retrying due to conflict: %v", err)
 			return err
 		}
-		log.Infof("Resource inclusions updated successfully in argocd-cm ConfigMap.")
+		log.Infof("Resource inclusions updated successfully in %s/argocd-cm ConfigMap.", argocdNS)
+		return nil
+	})
+}
+
+// UpdateResourceInclusionInArgoCDCR updates the resource.inclusions and resource.exclusions settings in ArgoCD CustomResource
+func UpdateResourceInclusionInArgoCDCR(dynamicClient dynamic.Interface, argoCDName, argocdNS string, resourceInclusion *GroupedResourceKinds) error {
+	ctx := context.Background()
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		argoCDCR, err := dynamicClient.Resource(ArgoCDGVR).Namespace(argocdNS).Get(ctx, argoCDName, v1.GetOptions{})
+		if err != nil {
+			return fmt.Errorf("error fetching ArgoCD custom resources: %v", err)
+		}
+		resourceInclusionString, err := GetResourceInclusionsString(resourceInclusion)
+		if err != nil {
+			return err
+		}
+		if err := unstructured.SetNestedField(argoCDCR.Object, resourceInclusionString, "spec", "extraConfig", "resource.inclusions"); err != nil {
+			return fmt.Errorf("failed to set resource.inclusions value: %v", err)
+		}
+		if err := unstructured.SetNestedField(argoCDCR.Object, "", "spec", "extraConfig", "resource.exclusions"); err != nil {
+			return fmt.Errorf("failed to set resource.exclusions value: %v", err)
+		}
+
+		// perform the actual update of the configmap
+		_, err = dynamicClient.Resource(ArgoCDGVR).Namespace(argocdNS).Update(ctx, argoCDCR, v1.UpdateOptions{})
+		if err != nil {
+			log.Warningf("Retrying due to conflict: %v", err)
+			return err
+		}
+		log.Infof("Resource inclusions updated successfully in %s/%s ArgoCD CR.", argocdNS, argoCDName)
 		return nil
 	})
 }
@@ -404,6 +501,41 @@ func GetCurrentGroupedKindsFromCM(dynamicClient dynamic.Interface, argocdNS stri
 		}
 	} else {
 		log.Infof("resource inclusions not found in argocd-cm in namespace %s ", argocdNS)
+	}
+	return results, nil
+}
+
+// GetCurrentGroupedKindsFromArgoCDCR reads the resource.inclusions from argocd-cm config map and converts it to GroupedResourceKinds
+func GetCurrentGroupedKindsFromArgoCDCR(dynamicClient dynamic.Interface, argocdName, argocdNS string) (GroupedResourceKinds, error) {
+	argocdCR, err := dynamicClient.Resource(ArgoCDGVR).Namespace(argocdNS).Get(context.Background(), argocdName, v1.GetOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("error fetching ConfigMap: %v", err)
+	}
+	results := make(GroupedResourceKinds)
+	existingResourceInclusionsInCMStr, found, err := unstructured.NestedString(argocdCR.Object, "spec", "extraConfig", "resource.inclusions")
+	if err != nil {
+		return nil, err
+	}
+	if found {
+		var existingResourceInclusionsInCM []ResourceInclusionEntry
+		err = yaml.Unmarshal([]byte(existingResourceInclusionsInCMStr), &existingResourceInclusionsInCM)
+		if err != nil {
+			return results, nil
+		}
+		for _, resourceInclusion := range existingResourceInclusionsInCM {
+			for _, apiGroup := range resourceInclusion.APIGroups {
+				for _, kind := range resourceInclusion.Kinds {
+					if results[apiGroup] == nil {
+						results[apiGroup] = make(map[string]Void)
+					}
+					results[apiGroup][kind] = Void{}
+				}
+				// break after the first item in apiGroup list
+				break
+			}
+		}
+	} else {
+		log.Infof("resource inclusions not found in ArgoCD CR %s/%s", argocdNS, argocdName)
 	}
 	return results, nil
 }
@@ -530,4 +662,20 @@ func getResourcesFromConditions(conditions []metav1.Condition) ([]ResourceInfo, 
 		}
 	}
 	return results, nil
+}
+
+// addOpenShiftSpecificRules adds rules that are specific to OpenShift CustomResources
+func addOpenShiftSpecificRules() {
+	core.AddRelationshipRule(core.RelationshipRule{
+		KindA:        "hostfirmwaresettings",
+		KindB:        "baremetalhosts",
+		Relationship: "BAREMETALHOSTS_OWN_HOSTFIRMWARE_SETTINGS",
+		MatchCriteria: []core.MatchCriterion{
+			{
+				FieldA:         "$.metadata.ownerReferences[].name",
+				FieldB:         "$.metadata.name",
+				ComparisonType: core.ExactMatch,
+			},
+		},
+	})
 }

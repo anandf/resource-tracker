@@ -17,25 +17,30 @@ spec:
     spec:
       containers:
         - name: openshift-gitops-resource-tracker
-          image: quay.io/anjoseph/argocd-resource-tracker:latest
-          imagePullPolicy: IfNotPresent
+          image: quay.io/anjoseph/argocd-resource-tracker:experimental
+          imagePullPolicy: Always
           args:
             - run-query
-            - --global
             - --loglevel
             - info
             - --tracking-method
             - label
-            - --direct-update
+            - --update-enabled
             - "true"
+            - --update-resource-kind
+            - ArgoCD
+            - --update-resource-name
+            - openshift-gitops
             - --argocd-namespace
             - openshift-gitops
+            - --interval
+            - "15m"
           resources:
             limits:
-              cpu: "500m"
+              cpu: "1"
               memory: "2Gi"
             requests:
-              cpu: "250m"
+              cpu: "500m"
               memory: "1Gi"
           securityContext:
             allowPrivilegeEscalation: false
