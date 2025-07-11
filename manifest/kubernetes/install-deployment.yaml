@@ -16,15 +16,22 @@ spec:
     spec:
       containers:
       - name: argocd-resource-tracker
-        image: quay.io/anjoseph/argocd-resource-tracker:latest
-        imagePullPolicy: IfNotPresent
+        image: quay.io/anjoseph/argocd-resource-tracker:experimental
+        imagePullPolicy: Always
         args:
         - run-query
-        - --global
         - --loglevel
         - info
         - --tracking-method
         - label
+        - --update-enabled
+        - "true"
+        - --update-resource-kind
+        - ConfigMap
+        - --update-resource-name
+        - argocd-cm
+        - --interval
+        - "5m"
         resources:
           limits:
             cpu: "500m"

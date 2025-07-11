@@ -40,6 +40,7 @@ mod-download:
 build:
 	mkdir -p ${OUTDIR}
 	CGO_ENABLED=0 GOOS=${OS} GOARCH=${ARCH} go build -ldflags "${LDFLAGS}" -o ${OUTDIR}/${BINNAME} cmd/*.go
+	CGO_ENABLED=0 GOOS=${OS} GOARCH=${ARCH} go build -ldflags "${LDFLAGS}" -o ${OUTDIR}/${BINNAME}-operator operator/*.go
 
 .PHONY: test
 test:

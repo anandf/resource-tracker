@@ -62,16 +62,16 @@ If querying for all the applications, it is efficient to use the `--global` flag
 argocd-resource-tracker run-query --global --tracking-method label --loglevel info
 ```
 
-By enabling the flag, `--direct-update`, it is possible to calculate the `resource.inclusions` and `resource.exclusions` and update the `argocd-cm` config map present in the namespace
+By enabling the flag, `--update-enabled`, it is possible to calculate the `resource.inclusions` and `resource.exclusions` and update the `argocd-cm` config map present in the namespace
 determined by the parameter `--argocd-namespace` (argocd by default).
 
 ```shell
-argocd-resource-tracker run-query --global --tracking-method label --loglevel info --direct-update true
+argocd-resource-tracker run-query --global --tracking-method label --loglevel info --update-enabled true
 ```
 
 Based on the resource tracking method configured in Argo CD, one can specify either the `label` tracking method or the `annotation` tracking method using the `--tracking-method` parameter.
 ```shell
-argocd-resource-tracker run-query --global --tracking-method annotation --loglevel info --direct-update true
+argocd-resource-tracker run-query --global --tracking-method annotation --loglevel info --update-enabled true
 ```
 
 ### Approach 2 : Using the Argo CD repo server
