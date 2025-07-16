@@ -14,6 +14,7 @@ func newRootCommand() error {
 	}
 
 	rootCmd.AddCommand(newRunQueryCommand())
+	rootCmd.AddCommand(newRunCommand())
 	err := rootCmd.Execute()
 	return err
 }

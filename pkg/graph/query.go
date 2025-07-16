@@ -2,11 +2,9 @@ package graph
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"reflect"
-	"regexp"
 	"strings"
 
 	"github.com/avitaltamir/cyphernetes/pkg/core"
@@ -14,7 +12,7 @@ import (
 	"github.com/avitaltamir/cyphernetes/pkg/provider/apiserver"
 	log "github.com/sirupsen/logrus"
 	"gopkg.in/yaml.v3"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -24,8 +22,10 @@ import (
 )
 
 const (
-	LabelTracking      = "$.metadata.labels.app\\.kubernetes\\.io/instance"
-	AnnotationTracking = "$.metadata.annotations.argocd\\.argoproj\\.io/tracking-id"
+	LabelTrackingCriteria      = "$.metadata.labels.app\\.kubernetes\\.io/instance"
+	AnnotationTrackingCriteria = "$.metadata.annotations.argocd\\.argoproj\\.io/tracking-id"
+	TrackingMethodLabel        = "label"
+	TrackingMethodAnnotation   = "annotation"
 )
 
 type QueryServer struct {
@@ -54,11 +54,6 @@ type ResourceInclusionEntry struct {
 	Kinds     []string `json:"kinds,omitempty"`
 	Clusters  []string `json:"clusters,omitempty"`
 }
-
-const (
-	ConditionTypeExcludedResourceWarning = "ConditionTypeExcludedResourceWarning"
-	ExcludedResourceWarningMsgPattern    = "([a-zA-Z]*)/([a-zA-Z0-9.]+) ([a-zA-Z0-9-_.]+)"
-)
 
 var (
 	ArgoAppGVR = schema.GroupVersionResource{
@@ -98,6 +93,9 @@ var (
 		"secrets":         true,
 		"serviceaccounts": true,
 		"pods":            true,
+		"nodes":           true,
+		"apiservices":     true,
+		"namespaces":      true,
 	}
 
 	leafKinds = map[string]bool{
@@ -131,7 +129,7 @@ var (
 	}
 )
 
-func NewQueryServer(restConfig *rest.Config, trackingMethod string) (*QueryServer, error) {
+func NewQueryServer(restConfig *rest.Config, trackingMethod string, loadCustomRules bool) (*QueryServer, error) {
 	// Create the API server provider
 	p, err := apiserver.NewAPIServerProviderWithOptions(&apiserver.APIServerProviderConfig{
 		Kubeconfig: restConfig,
@@ -143,37 +141,38 @@ func NewQueryServer(restConfig *rest.Config, trackingMethod string) (*QueryServe
 	}
 
 	tracker := "LBL"
-	fieldAMatchCriteria := LabelTracking
+	fieldAMatchCriteria := LabelTrackingCriteria
 	comparison := core.ExactMatch
-	if trackingMethod == "annotation" {
+	if trackingMethod == TrackingMethodAnnotation {
 		tracker = "ANN"
-		fieldAMatchCriteria = AnnotationTracking
+		fieldAMatchCriteria = AnnotationTrackingCriteria
 		comparison = core.StringContains
 	}
-
-	for _, knownResourceKind := range p.(*apiserver.APIServerProvider).GetKnownResourceKinds() {
-		if blackListedKinds[knownResourceKind] || leafKinds[knownResourceKind] {
-			log.Infof("skipping resource kind: %s", knownResourceKind)
-			continue
-		}
-		relationshipTypeName := strings.ToUpper(fmt.Sprintf("%s_%s_%s", "ARGOAPP_OWN", tracker, knownResourceKind))
-		if strings.Index(relationshipTypeName, ".") != -1 {
-			relationshipTypeName = strings.Replace(relationshipTypeName, ".", "_", -1)
-		}
-		core.AddRelationshipRule(core.RelationshipRule{
-			KindA:        strings.ToLower(knownResourceKind),
-			KindB:        "applications.argoproj.io",
-			Relationship: core.RelationshipType(relationshipTypeName),
-			MatchCriteria: []core.MatchCriterion{
-				{
-					FieldA:         fieldAMatchCriteria,
-					FieldB:         "$.metadata.name",
-					ComparisonType: comparison,
+	if loadCustomRules {
+		for _, knownResourceKind := range p.(*apiserver.APIServerProvider).GetKnownResourceKinds() {
+			if blackListedKinds[knownResourceKind] || leafKinds[knownResourceKind] {
+				log.Infof("skipping resource kind: %s", knownResourceKind)
+				continue
+			}
+			relationshipTypeName := strings.ToUpper(fmt.Sprintf("%s_%s_%s", "ARGOAPP_OWN", tracker, knownResourceKind))
+			if strings.Index(relationshipTypeName, ".") != -1 {
+				relationshipTypeName = strings.Replace(relationshipTypeName, ".", "_", -1)
+			}
+			core.AddRelationshipRule(core.RelationshipRule{
+				KindA:        strings.ToLower(knownResourceKind),
+				KindB:        "applications.argoproj.io",
+				Relationship: core.RelationshipType(relationshipTypeName),
+				MatchCriteria: []core.MatchCriterion{
+					{
+						FieldA:         fieldAMatchCriteria,
+						FieldB:         "$.metadata.name",
+						ComparisonType: comparison,
+					},
 				},
-			},
-		})
+			})
+		}
+		addOpenShiftSpecificRules()
 	}
-	addOpenShiftSpecificRules()
 	// Create query executor with the provider
 	executor := core.GetQueryExecutorInstance(p)
 	if executor == nil {
@@ -196,20 +195,21 @@ func (q *QueryServer) GetApplicationChildResources(name, namespace string) (Reso
 
 func (q *QueryServer) GetNestedChildResources(resource *ResourceInfo) (ResourceInfoSet, error) {
 	allLevelChildren := make(ResourceInfoSet)
+	for resInfo := range defaultIncludedResources {
+		allLevelChildren[resInfo] = Void{}
+		q.VisitedKinds[resInfo] = true
+	}
 	allLevelChildren, err := q.depthFirstTraversal(resource, allLevelChildren)
 	if err != nil {
 		return nil, err
-	}
-	for resInfo, _ := range defaultIncludedResources {
-		allLevelChildren[resInfo] = Void{}
 	}
 	return allLevelChildren, nil
 }
 
 // getChildren returns the immediate direct child of a given node by doing a graph query.
 func (q *QueryServer) getChildren(parentResourceInfo *ResourceInfo) ([]*ResourceInfo, error) {
-	if leafKinds[parentResourceInfo.Kind] {
-		log.Infof("skipping getChildren for leaf resource: %v", parentResourceInfo)
+	if leafKinds[parentResourceInfo.Kind] || blackListedKinds[parentResourceInfo.Kind] {
+		log.Infof("skipping getChildren for leaf and blacklisted resource: %v", parentResourceInfo)
 		return nil, nil
 	}
 	visitedKindKey := ResourceInfo{Kind: parentResourceInfo.Kind, APIVersion: parentResourceInfo.APIVersion}
@@ -295,7 +295,8 @@ func extractResourceInfo(queryResult *core.QueryResult, variable string) ([]*Res
 			continue
 		}
 		// Ignore namespace and node resource types, that can bring in a lot of other objects that are related to it.
-		if info["kind"].(string) == "Namespace" || info["kind"].(string) == "Node" {
+		if info["kind"] == nil || info["kind"].(string) == "Namespace" || info["kind"].(string) == "Node" || info["kind"].(string) == "APIService" {
+			log.Infof("ignoring resource of kind: %v", info["kind"])
 			continue
 		}
 		resourceInfo := ResourceInfo{
@@ -540,44 +541,6 @@ func GetCurrentGroupedKindsFromArgoCDCR(dynamicClient dynamic.Interface, argocdN
 	return results, nil
 }
 
-// ListApplicationResources returns the ResourceInfo of all Argo CD applications in the application namespace
-func ListApplicationResources(dynamicClient dynamic.Interface, argocdNS, appName string) ([]ResourceInfo, error) {
-	var argoAppResources []ResourceInfo
-	list, err := listApplications(dynamicClient, argocdNS)
-	if err != nil {
-		return nil, err
-	}
-	for _, obj := range list.Items {
-		if len(appName) > 0 {
-			if appName == obj.GetName() {
-				argoAppResources = append(argoAppResources, ResourceInfo{Kind: obj.GetKind(), Name: obj.GetName(), Namespace: obj.GetNamespace()})
-				break
-			}
-		} else {
-			argoAppResources = append(argoAppResources, ResourceInfo{Kind: obj.GetKind(), Name: obj.GetName(), Namespace: obj.GetNamespace()})
-		}
-	}
-	return argoAppResources, nil
-}
-
-// GetAllMissingResources returns the missing resources across all applications
-func GetAllMissingResources(dynamicClient dynamic.Interface, applicationNamespace string) ([]ResourceInfo, error) {
-	allMissingResources := make([]ResourceInfo, 0)
-	appList, err := listApplications(dynamicClient, applicationNamespace)
-	if err != nil {
-		return nil, err
-	}
-	for _, appObj := range appList.Items {
-		missingResources, err := getMissingResources(&appObj)
-		if err != nil {
-			log.Errorf("error getting missing resources from application: %v", err)
-			continue
-		}
-		allMissingResources = append(allMissingResources, missingResources...)
-	}
-	return allMissingResources, nil
-}
-
 // getAPIGroup returns the API group for a given API version.
 func getAPIGroup(apiVersion string) string {
 	if strings.Contains(apiVersion, "/") {
@@ -593,75 +556,6 @@ func getUniqueKinds(kinds Kinds) []string {
 		uniqueKinds = append(uniqueKinds, kind)
 	}
 	return uniqueKinds
-}
-
-// listApplications returns list of Argo CD applications as unstructured objects
-func listApplications(dynamicClient dynamic.Interface, namespace string) (*unstructured.UnstructuredList, error) {
-	return dynamicClient.Resource(ArgoAppGVR).Namespace(namespace).List(context.Background(), v1.ListOptions{})
-}
-
-// getMissingResources returns the resources that are missing to be managed via an Argo Application
-func getMissingResources(obj *unstructured.Unstructured) ([]ResourceInfo, error) {
-	statusConditions, found, err := unstructured.NestedSlice(obj.Object, "status", "conditions")
-	if err != nil {
-		return nil, err
-	}
-	if !found {
-		return nil, nil
-	}
-	conditions, err := getExcludedResourceConditions(statusConditions)
-	if err != nil {
-		return nil, err
-	}
-
-	missingResources, err := getResourcesFromConditions(conditions)
-	if err != nil {
-		return nil, err
-	}
-	return missingResources, nil
-}
-
-// getExcludedResourceConditions returns the ConditionTypeExcludedResourceWarning from status.conditions of an Argo Application object
-func getExcludedResourceConditions(statusConditions []interface{}) ([]metav1.Condition, error) {
-	resultConditions := make([]metav1.Condition, 0, len(statusConditions))
-	// Marshal and Unmarshal to convert the map[string]interface{} to a Condition struct and add it only
-	// if its of type ConditionTypeExcludedResourceWarning
-	for _, conditionMap := range statusConditions {
-		jsonBytes, err := json.Marshal(conditionMap)
-		if err != nil {
-			return nil, fmt.Errorf("error marshaling condition map: %w", err)
-		}
-		var condition metav1.Condition
-		if err := json.Unmarshal(jsonBytes, &condition); err != nil {
-			return nil, fmt.Errorf("error unmarshaling condition: %w", err)
-		}
-		if condition.Type == "ConditionTypeExcludedResourceWarning" {
-			resultConditions = append(resultConditions, condition)
-		}
-	}
-	return resultConditions, nil
-}
-
-// getResourcesFromConditions returns the resources that are missing to be managed reported in status.conditions of an Argo Application
-func getResourcesFromConditions(conditions []metav1.Condition) ([]ResourceInfo, error) {
-	regex := regexp.MustCompile(ExcludedResourceWarningMsgPattern)
-	results := make([]ResourceInfo, 0, len(conditions))
-	for _, condition := range conditions {
-		if condition.Type == ConditionTypeExcludedResourceWarning {
-			matches := regex.FindStringSubmatch(condition.Message)
-			if len(matches) > 3 {
-				group := matches[1]
-				kind := matches[2]
-				resourceName := matches[3]
-				results = append(results, ResourceInfo{
-					APIVersion: group,
-					Kind:       kind,
-					Name:       resourceName,
-				})
-			}
-		}
-	}
-	return results, nil
 }
 
 // addOpenShiftSpecificRules adds rules that are specific to OpenShift CustomResources

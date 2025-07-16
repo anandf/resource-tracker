@@ -6,13 +6,13 @@ import (
 
 	"strings"
 
+	"github.com/anandf/resource-tracker/pkg/argocd"
 	"github.com/anandf/resource-tracker/pkg/env"
 	"github.com/anandf/resource-tracker/pkg/graph"
 	"github.com/anandf/resource-tracker/pkg/version"
 	"github.com/avitaltamir/cyphernetes/pkg/core"
 	log "github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
-	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 )
@@ -28,8 +28,8 @@ type RunQueryConfig struct {
 }
 
 var (
-	queryServer   *graph.QueryServer
-	dynamicClient dynamic.Interface
+	queryServer  *graph.QueryServer
+	argoCDClient argocd.ArgoCD
 )
 
 // newRunQueryCommand implements "runQuery" command which executes a cyphernetes graph query against a given kubeconfig
@@ -61,7 +61,7 @@ func newRunQueryCommand() *cobra.Command {
 	}
 	runQueryCmd.Flags().StringVar(&cfg.logLevel, "loglevel", env.GetStringVal("RESOURCE_TRACKER_LOGLEVEL", "info"), "set the loglevel to one of trace|debug|info|warn|error")
 	runQueryCmd.Flags().StringVar(&cfg.kubeConfig, "kubeconfig", "", "full path to kube client configuration, i.e. ~/.kube/config")
-	runQueryCmd.Flags().StringVar(&cfg.trackingMethod, "tracking-method", "label", "either label or annotation tracking used by Argo CD")
+	runQueryCmd.Flags().StringVar(&cfg.trackingMethod, "tracking-method", graph.TrackingMethodLabel, "either label or annotation tracking used by Argo CD")
 	runQueryCmd.Flags().StringVar(&cfg.applicationName, "app-name", "", "if only specific application resources needs to be tracked, by default all applications ")
 	runQueryCmd.Flags().StringVar(&cfg.applicationNamespace, "app-namespace", "", "namespace for the given application. Default value is empty string indicating cluster scope")
 	runQueryCmd.Flags().StringVar(&cfg.argocdNamespace, "argocd-namespace", "argocd", "namespace where argocd control plane components are running")
@@ -90,14 +90,11 @@ func initQueryServer(cfg *RunQueryConfig) error {
 			return fmt.Errorf("failed to create config: %v", err)
 		}
 	}
-	queryServer, err = graph.NewQueryServer(restConfig, cfg.trackingMethod)
+	queryServer, err = graph.NewQueryServer(restConfig, cfg.trackingMethod, true)
 	if err != nil {
 		return err
 	}
-	dynamicClient, err = dynamic.NewForConfig(restConfig)
-	if err != nil {
-		return err
-	}
+	argoCDClient, err = argocd.NewArgoCD(restConfig, cfg.argocdNamespace)
 	return nil
 }
 
@@ -116,7 +113,7 @@ func runQueryExecutor(cfg *RunQueryConfig) error {
 			allAppChildren = append(allAppChildren, appChild)
 		}
 	} else {
-		argoAppResources, err := graph.ListApplicationResources(dynamicClient, cfg.argocdNamespace, cfg.applicationName)
+		argoAppResources, err := argoCDClient.ListApplications()
 		if err != nil {
 			return err
 		}
@@ -133,7 +130,7 @@ func runQueryExecutor(cfg *RunQueryConfig) error {
 		}
 	}
 	groupedKinds := graph.MergeResourceInfo(allAppChildren)
-	missingResources, err := graph.GetAllMissingResources(dynamicClient, cfg.argocdNamespace)
+	missingResources, err := argoCDClient.GetAllMissingResources()
 	if err != nil {
 		return err
 	}

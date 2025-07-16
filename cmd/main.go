@@ -2,7 +2,6 @@ package main
 
 import (
 	"os"
-	"time"
 
 	"github.com/anandf/resource-tracker/pkg/argocd"
 	"github.com/spf13/cobra"
@@ -11,13 +10,14 @@ import (
 // ResourceTrackerConfig contains global configuration and required runtime data
 type ResourceTrackerConfig struct {
 	ArgocdNamespace          string
-	CheckInterval            time.Duration
 	ArgoClient               argocd.ArgoCD
+	RepoClient               *argocd.RepoServerManager
 	LogLevel                 string
 	RepoServerAddress        string
 	RepoServerPlaintext      bool
 	RepoServerStrictTLS      bool
 	RepoServerTimeoutSeconds int
+	kubeConfig               string
 }
 
 // newRootCommand implements the root command of argocd-resource-tracker

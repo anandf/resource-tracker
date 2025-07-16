@@ -25,7 +25,7 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 )
 
-type ResourceController struct {
+type RepoServerController struct {
 	dynamicClient        dynamic.Interface
 	restConfig           *rest.Config
 	previousGroupedKinds graph.GroupedResourceKinds
@@ -34,8 +34,8 @@ type ResourceController struct {
 	argoCDClient         argocd.ArgoCD
 }
 
-// newRunQueryCommand implements "runQuery" command which executes a cyphernetes graph query against a given kubeconfig
-func newRunQueryCommand() *cobra.Command {
+// newRunCommand implements "runQuery" command which executes a cyphernetes graph query against a given kubeconfig
+func newRunCommand() *cobra.Command {
 	cfg := &ResourceControllerConfig{}
 	var runQueryCmd = &cobra.Command{
 		Use:   "run-query",
@@ -54,11 +54,11 @@ func newRunQueryCommand() *cobra.Command {
 			}
 			log.SetLevel(level)
 			core.LogLevel = cfg.logLevel
-			controller, err := newResourceController(cfg)
+			controller, err := newRepoServerResourceController(cfg)
 			if err != nil {
 				return err
 			}
-			return controller.initArgoApplicationInformer(cfg)
+			return controller.initArgoApplicationRepoServerInformer(cfg)
 		},
 	}
 	runQueryCmd.Flags().StringVar(&cfg.logLevel, "loglevel", env.GetStringVal("RESOURCE_TRACKER_LOGLEVEL", "info"), "set the loglevel to one of trace|debug|info|warn|error")
@@ -74,7 +74,7 @@ func newRunQueryCommand() *cobra.Command {
 	return runQueryCmd
 }
 
-func newResourceController(cfg *ResourceControllerConfig) (*ResourceController, error) {
+func newRepoServerResourceController(cfg *ResourceControllerConfig) (*RepoServerController, error) {
 	if cfg.updateResourceKind == ConfigMapResourceKind || cfg.updateResourceName == ArgoCDResourceKind {
 		return nil, fmt.Errorf("invalid update-resource-kind, valid values are ConfigMap and ArgoCD")
 	}
@@ -112,7 +112,7 @@ func newResourceController(cfg *ResourceControllerConfig) (*ResourceController, 
 		if len(clusterConfig.Host) == 0 {
 			continue
 		}
-		queryServer, err := graph.NewQueryServer(clusterConfig, cfg.trackingMethod, true)
+		queryServer, err := graph.NewQueryServer(clusterConfig, cfg.trackingMethod, false)
 		if err != nil {
 			return nil, err
 		}
@@ -126,7 +126,7 @@ func newResourceController(cfg *ResourceControllerConfig) (*ResourceController, 
 	if err != nil {
 		return nil, err
 	}
-	return &ResourceController{
+	return &RepoServerController{
 		dynamicClient: dynamicClient,
 		queryServers:  queryServerMap,
 		restConfig:    restConfig,
@@ -134,10 +134,10 @@ func newResourceController(cfg *ResourceControllerConfig) (*ResourceController, 
 	}, nil
 }
 
-// initArgoApplicationInformer initializes the shared informers for Argo CD Application objects.
+// initArgoApplicationRepoServerInformer initializes the shared informers for Argo CD Application objects.
 // whenever a change to any Argo Application is detected, the graph query is executed and the resource inclusion
 // entries are computed.
-func (r *ResourceController) initArgoApplicationInformer(cfg *ResourceControllerConfig) error {
+func (r *RepoServerController) initArgoApplicationRepoServerInformer(cfg *ResourceControllerConfig) error {
 	// Create a dynamic shared informer factory
 	informerFactory := dynamicinformer.NewFilteredDynamicSharedInformerFactory(r.dynamicClient, 1*time.Minute, "", nil)
 
@@ -149,7 +149,7 @@ func (r *ResourceController) initArgoApplicationInformer(cfg *ResourceController
 		AddFunc: func(obj interface{}) {
 			unstructuredObj := obj.(*unstructured.Unstructured)
 			log.Infof("Object Added: %s/%s", unstructuredObj.GetNamespace(), unstructuredObj.GetName())
-			if err := r.runQueryExecutor(cfg); err != nil {
+			if err := r.runRepoServerExecutor(cfg); err != nil {
 				log.Error(err)
 			}
 		},
@@ -159,14 +159,14 @@ func (r *ResourceController) initArgoApplicationInformer(cfg *ResourceController
 			log.Infof("Object Updated: %s/%s (ResourceVersion: %s -> %s)",
 				newUnstructured.GetNamespace(), newUnstructured.GetName(),
 				oldUnstructured.GetResourceVersion(), newUnstructured.GetResourceVersion())
-			if err := r.runQueryExecutor(cfg); err != nil {
+			if err := r.runRepoServerExecutor(cfg); err != nil {
 				log.Error(err)
 			}
 		},
 		DeleteFunc: func(obj interface{}) {
 			unstructuredObj := obj.(*unstructured.Unstructured)
 			log.Infof("Object Deleted: %s/%s", unstructuredObj.GetNamespace(), unstructuredObj.GetName())
-			if err := r.runQueryExecutor(cfg); err != nil {
+			if err := r.runRepoServerExecutor(cfg); err != nil {
 				log.Error(err)
 			}
 		},
@@ -202,7 +202,7 @@ func (r *ResourceController) initArgoApplicationInformer(cfg *ResourceController
 // settings in the argocd-cm config map if it detects any new changes compared to the previous computed value or if its
 // value is different from what is present in the argocd-cm config map.
 // if the check interval time has not passed since the previous run, then the method returns without executing any queries.
-func (r *ResourceController) runQueryExecutor(cfg *ResourceControllerConfig) error {
+func (r *RepoServerController) runRepoServerExecutor(cfg *ResourceControllerConfig) error {
 	if !cfg.lastRunTime.IsZero() && time.Since(cfg.lastRunTime) < cfg.checkInterval {
 		log.Info("skipping query executor due to last run not lapsed the check interval")
 		return nil
@@ -259,7 +259,7 @@ func (r *ResourceController) runQueryExecutor(cfg *ResourceControllerConfig) err
 }
 
 // handUpdateInCM handles the update of resource.inclusions settings in argocd-cm ConfigMap
-func (r *ResourceController) handUpdateInCM(cfg *ResourceControllerConfig, groupedKinds graph.GroupedResourceKinds) error {
+func (r *RepoServerController) handUpdateInCM(cfg *ResourceControllerConfig, groupedKinds graph.GroupedResourceKinds) error {
 	existingGroupKinds, err := graph.GetCurrentGroupedKindsFromCM(r.dynamicClient, cfg.argocdNamespace)
 	if err != nil {
 		return err
@@ -277,7 +277,7 @@ func (r *ResourceController) handUpdateInCM(cfg *ResourceControllerConfig, group
 }
 
 // handUpdateInArgoCDCR handles the update of resource.inclusions settings in ArgoCD CustomResource
-func (r *ResourceController) handUpdateInArgoCDCR(cfg *ResourceControllerConfig, groupedKinds graph.GroupedResourceKinds) error {
+func (r *RepoServerController) handUpdateInArgoCDCR(cfg *ResourceControllerConfig, groupedKinds graph.GroupedResourceKinds) error {
 	existingGroupKinds, err := graph.GetCurrentGroupedKindsFromArgoCDCR(r.dynamicClient, cfg.updateResourceName, cfg.argocdNamespace)
 	if err != nil {
 		return err
