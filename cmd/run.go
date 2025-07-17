@@ -21,10 +21,53 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// ResourceTrackerConfig contains global configuration and required runtime data
+type ResourceTrackerConfig struct {
+	ArgocdNamespace          string
+	LogLevel                 string
+	RepoServerAddress        string
+	RepoServerPlaintext      bool
+	RepoServerStrictTLS      bool
+	RepoServerTimeoutSeconds int
+	kubeConfig               string
+}
+
+type RunController struct {
+	argoCDClient argocd.ArgoCD
+	repoClient   *argocd.RepoServerManager
+}
+
 type manifestResponse struct {
 	children          []*unstructured.Unstructured
 	destinationConfig *rest.Config
 	appName           string
+}
+
+func newRunControler(cfg *ResourceTrackerConfig) (*RunController, error) {
+	// Prepare the KUBECONFIG to connect to the Kubernetes cluster.
+	config, err := kube.GetKubeConfig(cfg.kubeConfig)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get kube config: %w", err)
+	}
+	// Set this environment variable when running as CLI connecting to the Argo CD components running
+	// inside a cluster.
+	err = os.Setenv("ARGOCD_FAKE_IN_CLUSTER", "true")
+	if err != nil {
+		return nil, fmt.Errorf("failed to set env variable ARGOCD_FAKE_IN_CLUSTER: %w", err)
+	}
+	argoCD, err := argocd.NewArgoCD(config, cfg.ArgocdNamespace)
+	if err != nil {
+		return nil, err
+	}
+	repo, err := argocd.NewRepoServerManager(config, cfg.ArgocdNamespace, cfg.RepoServerAddress, cfg.RepoServerTimeoutSeconds,
+		cfg.RepoServerPlaintext, cfg.RepoServerStrictTLS)
+	if err != nil {
+		return nil, err
+	}
+	return &RunController{
+		argoCDClient: argoCD,
+		repoClient:   repo,
+	}, nil
 }
 
 // newRunCommand implements "run" command
@@ -46,27 +89,11 @@ func newRunCommand() *cobra.Command {
 				return fmt.Errorf("failed to parse log level: %w", err)
 			}
 			log.SetLevel(level)
-			// Prepare the KUBECONFIG to connect to the Kubernetes cluster.
-			config, err := kube.GetKubeConfig(cfg.kubeConfig)
-			if err != nil {
-				return fmt.Errorf("failed to get kube config: %w", err)
-			}
-			// Set this environment variable when running as CLI connecting to the Argo CD components running
-			// inside a cluster.
-			err = os.Setenv("ARGOCD_FAKE_IN_CLUSTER", "true")
-			if err != nil {
-				return fmt.Errorf("failed to set env variable ARGOCD_FAKE_IN_CLUSTER: %w", err)
-			}
-			cfg.ArgoClient, err = argocd.NewArgoCD(config, cfg.ArgocdNamespace)
+			r, err := newRunControler(cfg)
 			if err != nil {
 				return err
 			}
-			cfg.RepoClient, err = argocd.NewRepoServerManager(config, cfg.ArgocdNamespace, cfg.RepoServerAddress, cfg.RepoServerTimeoutSeconds,
-				cfg.RepoServerPlaintext, cfg.RepoServerStrictTLS)
-			if err != nil {
-				return err
-			}
-			return runResourceTracker(cfg)
+			return r.runResourceTracker(cfg)
 		},
 	}
 	runCmd.Flags().StringVar(&cfg.RepoServerAddress, "repo-server", env.GetStringVal("ARGOCD_REPO_SERVER", common.DefaultRepoServerAddr), "Repo server address.")
@@ -76,13 +103,12 @@ func newRunCommand() *cobra.Command {
 	runCmd.Flags().BoolVar(&cfg.RepoServerStrictTLS, "repo-server-strict-tls", false, "Whether to use strict validation of the TLS cert presented by the repo server, Default: false")
 	runCmd.Flags().StringVar(&cfg.kubeConfig, "kubeconfig", "", "full path to kube client configuration, i.e. ~/.kube/config")
 	runCmd.Flags().StringVar(&cfg.ArgocdNamespace, "argocd-namespace", "", "namespace where ArgoCD runs in (current namespace by default)")
-
 	return runCmd
 }
 
-func runResourceTracker(cfg *ResourceTrackerConfig) error {
+func (r *RunController) runResourceTracker(cfg *ResourceTrackerConfig) error {
 	log.Info("Starting resource tracking process...")
-	apps, err := cfg.ArgoClient.ListApplications()
+	apps, err := r.argoCDClient.ListApplications()
 	if err != nil {
 		log.Fatalf("Error while listing applications: %v", err)
 	}
@@ -98,13 +124,13 @@ func runResourceTracker(cfg *ResourceTrackerConfig) error {
 		go func(app v1alpha1.Application) {
 			log.Infof("processing application: %s", app.Name)
 			defer wg.Done()
-			appProject, err := cfg.ArgoClient.GetAppProject(app)
+			appProject, err := r.argoCDClient.GetAppProject(app)
 			if err != nil {
 				errChan <- err
 				return
 			}
 			// Get target object from repo-server
-			targetObjs, destinationConfig, err := cfg.RepoClient.GetApplicationChildManifests(context.Background(), &app, appProject)
+			targetObjs, destinationConfig, err := r.repoClient.GetApplicationChildManifests(context.Background(), &app, appProject)
 			if err != nil {
 				errChan <- err
 				return
@@ -129,14 +155,14 @@ func runResourceTracker(cfg *ResourceTrackerConfig) error {
 	log.Info("Resource channel has been closed. Resource Tracker process has completed successfully.")
 	var nestedResources = make([]graph.ResourceInfo, 0)
 	for _, appChild := range allAppChildren {
-		appGroupedResources, err := cfg.ArgoClient.ProcessApplication(appChild.children, appChild.appName, appChild.destinationConfig)
+		appGroupedResources, err := r.argoCDClient.ProcessApplication(appChild.children, appChild.appName, appChild.destinationConfig)
 		if err != nil {
 			return fmt.Errorf("error processing application: %w", err)
 		}
 		nestedResources = append(nestedResources, appGroupedResources...)
 	}
 	groupedKinds := graph.MergeResourceInfo(nestedResources)
-	missingResources, err := cfg.ArgoClient.GetAllMissingResources()
+	missingResources, err := r.argoCDClient.GetAllMissingResources()
 	if err != nil {
 		return fmt.Errorf("error while fetching missing resources: %v", err)
 	}

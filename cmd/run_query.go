@@ -20,17 +20,16 @@ import (
 type RunQueryConfig struct {
 	applicationName      string
 	applicationNamespace string
-	trackingMethod       string
 	globalQuery          *bool
 	logLevel             string
 	kubeConfig           string
 	argocdNamespace      string
 }
 
-var (
+type RunQueryController struct {
 	queryServer  *graph.QueryServer
 	argoCDClient argocd.ArgoCD
-)
+}
 
 // newRunQueryCommand implements "runQuery" command which executes a cyphernetes graph query against a given kubeconfig
 func newRunQueryCommand() *cobra.Command {
@@ -52,16 +51,18 @@ func newRunQueryCommand() *cobra.Command {
 			}
 			log.SetLevel(level)
 			core.LogLevel = cfg.logLevel
-			err = initQueryServer(cfg)
+			r, err := newRunQuery(cfg)
 			if err != nil {
 				return err
 			}
-			return runQueryExecutor(cfg)
+			if err != nil {
+				return err
+			}
+			return r.runQueryExecutor(cfg)
 		},
 	}
 	runQueryCmd.Flags().StringVar(&cfg.logLevel, "loglevel", env.GetStringVal("RESOURCE_TRACKER_LOGLEVEL", "info"), "set the loglevel to one of trace|debug|info|warn|error")
 	runQueryCmd.Flags().StringVar(&cfg.kubeConfig, "kubeconfig", "", "full path to kube client configuration, i.e. ~/.kube/config")
-	runQueryCmd.Flags().StringVar(&cfg.trackingMethod, "tracking-method", graph.TrackingMethodLabel, "either label or annotation tracking used by Argo CD")
 	runQueryCmd.Flags().StringVar(&cfg.applicationName, "app-name", "", "if only specific application resources needs to be tracked, by default all applications ")
 	runQueryCmd.Flags().StringVar(&cfg.applicationNamespace, "app-namespace", "", "namespace for the given application. Default value is empty string indicating cluster scope")
 	runQueryCmd.Flags().StringVar(&cfg.argocdNamespace, "argocd-namespace", "argocd", "namespace where argocd control plane components are running")
@@ -69,13 +70,13 @@ func newRunQueryCommand() *cobra.Command {
 	return runQueryCmd
 }
 
-// initQueryServer initializes the required kubernetes clients and the cyphernetes graph query executor.
+// newRunQuery initializes the required kubernetes clients and the cyphernetes graph query executor.
 // this is an expensive operation and done only once, and the same executor is used for further graph query executions
-func initQueryServer(cfg *RunQueryConfig) error {
+func newRunQuery(cfg *RunQueryConfig) (*RunQueryController, error) {
 	// First try in-cluster config
 	restConfig, err := rest.InClusterConfig()
 	if err != nil && !errors.Is(err, rest.ErrNotInCluster) {
-		return fmt.Errorf("failed to create config: %v", err)
+		return nil, fmt.Errorf("failed to create config: %v", err)
 	}
 
 	// If not running in-cluster, try loading from KUBECONFIG env or $HOME/.kube/config file
@@ -87,24 +88,35 @@ func initQueryServer(cfg *RunQueryConfig) error {
 		kubeConfig := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(loadingRules, configOverrides)
 		restConfig, err = kubeConfig.ClientConfig()
 		if err != nil {
-			return fmt.Errorf("failed to create config: %v", err)
+			return nil, fmt.Errorf("failed to create config: %v", err)
 		}
 	}
-	queryServer, err = graph.NewQueryServer(restConfig, cfg.trackingMethod, true)
+
+	argoCD, err := argocd.NewArgoCD(restConfig, cfg.argocdNamespace)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	argoCDClient, err = argocd.NewArgoCD(restConfig, cfg.argocdNamespace)
-	return nil
+	trackingMethod, err := argoCD.GetTrackingMethod()
+	if err != nil {
+		return nil, err
+	}
+	qs, err := graph.NewQueryServer(restConfig, trackingMethod, true)
+	if err != nil {
+		return nil, err
+	}
+	return &RunQueryController{
+		queryServer:  qs,
+		argoCDClient: argoCD,
+	}, nil
 }
 
 // runQueryExecutor runs the graph query, computes the resources managed via Argo CD and prints it on the terminal
-func runQueryExecutor(cfg *RunQueryConfig) error {
+func (r *RunQueryController) runQueryExecutor(cfg *RunQueryConfig) error {
 	log.Info("Starting query executor...")
 	var allAppChildren []graph.ResourceInfo
 	if *cfg.globalQuery {
 		log.Infof("Querying Argo CD application globally for application '%s'...", cfg.applicationName)
-		appChildren, err := queryServer.GetApplicationChildResources(cfg.applicationName, "")
+		appChildren, err := r.queryServer.GetApplicationChildResources(cfg.applicationName, "")
 		if err != nil {
 			return err
 		}
@@ -113,13 +125,13 @@ func runQueryExecutor(cfg *RunQueryConfig) error {
 			allAppChildren = append(allAppChildren, appChild)
 		}
 	} else {
-		argoAppResources, err := argoCDClient.ListApplications()
+		argoAppResources, err := r.argoCDClient.ListApplications()
 		if err != nil {
 			return err
 		}
 		for _, argoAppResource := range argoAppResources {
 			log.Infof("Querying Argo CD application '%v'", argoAppResource)
-			appChildren, err := queryServer.GetApplicationChildResources(argoAppResource.Name, "")
+			appChildren, err := r.queryServer.GetApplicationChildResources(argoAppResource.Name, "")
 			if err != nil {
 				return err
 			}
@@ -130,7 +142,7 @@ func runQueryExecutor(cfg *RunQueryConfig) error {
 		}
 	}
 	groupedKinds := graph.MergeResourceInfo(allAppChildren)
-	missingResources, err := argoCDClient.GetAllMissingResources()
+	missingResources, err := r.argoCDClient.GetAllMissingResources()
 	if err != nil {
 		return err
 	}

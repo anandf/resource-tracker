@@ -31,6 +31,7 @@ type ArgoCD interface {
 	GetAppProject(app v1alpha1.Application) (*v1alpha1.AppProject, error)
 	ProcessApplication(targetObjs []*unstructured.Unstructured, destinationNS string, destinationConfig *rest.Config) ([]graph.ResourceInfo, error)
 	GetAllMissingResources() ([]graph.ResourceInfo, error)
+	GetTrackingMethod() (string, error)
 }
 
 // Kubernetes based client
@@ -39,6 +40,7 @@ type argocd struct {
 	applicationClientSet versioned.Interface
 	queryServers         map[string]*graph.QueryServer
 	trackingMethod       v1alpha1.TrackingMethod
+	settingsManager      *settings.SettingsManager
 }
 
 // NewArgoCD creates a new kube client to interact with kube api-server.
@@ -47,18 +49,19 @@ func NewArgoCD(config *rest.Config, argocdNS string) (ArgoCD, error) {
 	if err != nil {
 		return nil, fmt.Errorf("could not create K8s client: %w", err)
 	}
-	queryServers := make(map[string]*graph.QueryServer)
+	qsMap := make(map[string]*graph.QueryServer)
 	qs, err := graph.NewQueryServer(config, graph.TrackingMethodLabel, false)
 	if err != nil {
 		return nil, fmt.Errorf("could not create query server: %w", err)
 	}
-	queryServers[config.Host] = qs
+	qsMap[config.Host] = qs
 	settingsMgr := settings.NewSettingsManager(context.Background(), resourceTrackerConfig.KubeClient.Clientset, argocdNS)
 	return &argocd{
 		kubeClient:           resourceTrackerConfig.KubeClient,
 		applicationClientSet: resourceTrackerConfig.ApplicationClientSet,
-		queryServers:         make(map[string]*graph.QueryServer),
+		queryServers:         qsMap,
 		trackingMethod:       argo.GetTrackingMethod(settingsMgr),
+		settingsManager:      settingsMgr,
 	}, nil
 }
 
@@ -104,6 +107,7 @@ func (a *argocd) ProcessApplication(targetObjs []*unstructured.Unstructured, des
 		if err != nil {
 			return nil, err
 		}
+		qs.VisitedKinds = make(map[graph.ResourceInfo]bool)
 		appChildren, err := qs.GetNestedChildResources(&graph.ResourceInfo{
 			Name:       targetObj.GetName(),
 			Namespace:  namespace,
@@ -136,6 +140,32 @@ func (a *argocd) GetAllMissingResources() ([]graph.ResourceInfo, error) {
 		allMissingResources = append(allMissingResources, missingResources...)
 	}
 	return allMissingResources, nil
+}
+
+// GetTrackingMethod returns the tracking method configured for argocd
+func (a *argocd) GetTrackingMethod() (string, error) {
+	return a.settingsManager.GetTrackingMethod()
+}
+
+// lookupQueryServer looks up query server for a given kubeconfig
+func (a *argocd) lookupQueryServer(kubeConfig *rest.Config) (*graph.QueryServer, error) {
+	if kubeConfig == nil {
+		return nil, fmt.Errorf("invalid kubeConfig is nil")
+	}
+	if qs, ok := a.queryServers[kubeConfig.Host]; !ok {
+		trackingMethod, err := a.GetTrackingMethod()
+		if err != nil {
+			return nil, err
+		}
+		newQueryServer, err := graph.NewQueryServer(kubeConfig, trackingMethod, false)
+		if err != nil {
+			return nil, fmt.Errorf("could not create query server: %w", err)
+		}
+		a.queryServers[kubeConfig.Host] = newQueryServer
+		return newQueryServer, nil
+	} else {
+		return qs, nil
+	}
 }
 
 // getMissingResources returns the resources that are missing to be managed via an Argo Application
@@ -194,20 +224,4 @@ func getResourcesFromConditions(conditions []metav1.Condition) ([]graph.Resource
 		}
 	}
 	return results, nil
-}
-
-func (a *argocd) lookupQueryServer(kubeConfig *rest.Config) (*graph.QueryServer, error) {
-	if kubeConfig == nil {
-		return nil, fmt.Errorf("invalid kubeConfig is nil")
-	}
-	if qs, ok := a.queryServers[kubeConfig.Host]; !ok {
-		newQueryServer, err := graph.NewQueryServer(kubeConfig, graph.TrackingMethodLabel, false)
-		if err != nil {
-			return nil, fmt.Errorf("could not create query server: %w", err)
-		}
-		a.queryServers[kubeConfig.Host] = newQueryServer
-		return newQueryServer, nil
-	} else {
-		return qs, nil
-	}
 }

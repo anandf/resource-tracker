@@ -3,22 +3,8 @@ package main
 import (
 	"os"
 
-	"github.com/anandf/resource-tracker/pkg/argocd"
 	"github.com/spf13/cobra"
 )
-
-// ResourceTrackerConfig contains global configuration and required runtime data
-type ResourceTrackerConfig struct {
-	ArgocdNamespace          string
-	ArgoClient               argocd.ArgoCD
-	RepoClient               *argocd.RepoServerManager
-	LogLevel                 string
-	RepoServerAddress        string
-	RepoServerPlaintext      bool
-	RepoServerStrictTLS      bool
-	RepoServerTimeoutSeconds int
-	kubeConfig               string
-}
 
 // newRootCommand implements the root command of argocd-resource-tracker
 func newRootCommand() error {

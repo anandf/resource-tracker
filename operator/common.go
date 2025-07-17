@@ -1,12 +1,12 @@
 package main
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"time"
 
-	"github.com/anandf/resource-tracker/pkg/argocd"
 	"github.com/anandf/resource-tracker/pkg/graph"
 	log "github.com/sirupsen/logrus"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -71,4 +71,40 @@ func listClusterConfigs(dynamicClient dynamic.Interface, argocdNS string) ([]*re
 		kubeConfigs = append(kubeConfigs, &kubeConfig)
 	}
 	return kubeConfigs, nil
+}
+
+// handleUpdateInArgoCDCR handles the update of resource.inclusions settings in ArgoCD CustomResource
+func handleUpdateInArgoCDCR(dynamicClient dynamic.Interface, resourceName, resourceNamespace string, groupedKinds graph.GroupedResourceKinds) error {
+	existingGroupKinds, err := graph.GetCurrentGroupedKindsFromArgoCDCR(dynamicClient, resourceName, resourceNamespace)
+	if err != nil {
+		return err
+	}
+	if !graph.IsGroupedResourceKindsEqual(existingGroupKinds, groupedKinds) {
+		log.Infof("changes detected in resource inclusions, updating the argocd-cm configmap")
+		err = graph.UpdateResourceInclusionInArgoCDCR(dynamicClient, resourceName, resourceNamespace, &groupedKinds)
+		if err != nil {
+			return err
+		}
+	} else {
+		log.Info("no changes detected in existing resource inclusions in argocd-cm configmap")
+	}
+	return nil
+}
+
+// handleUpdateInCM handles the update of resource.inclusions settings in argocd-cm ConfigMap
+func handleUpdateInCM(dynamicClient dynamic.Interface, resourceNamespace string, groupedKinds graph.GroupedResourceKinds) error {
+	existingGroupKinds, err := graph.GetCurrentGroupedKindsFromCM(dynamicClient, resourceNamespace)
+	if err != nil {
+		return err
+	}
+	if !graph.IsGroupedResourceKindsEqual(existingGroupKinds, groupedKinds) {
+		log.Infof("changes detected in resource inclusions, updating the argocd-cm configmap")
+		err = graph.UpdateResourceInclusion(dynamicClient, resourceNamespace, &groupedKinds)
+		if err != nil {
+			return err
+		}
+	} else {
+		log.Info("no changes detected in existing resource inclusions in argocd-cm configmap")
+	}
+	return nil
 }

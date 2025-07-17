@@ -1,11 +1,13 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -14,6 +16,8 @@ import (
 	"github.com/anandf/resource-tracker/pkg/graph"
 	"github.com/anandf/resource-tracker/pkg/kube"
 	"github.com/anandf/resource-tracker/pkg/version"
+	"github.com/argoproj/argo-cd/v2/common"
+	"github.com/argoproj/argo-cd/v2/pkg/apis/application/v1alpha1"
 	"github.com/avitaltamir/cyphernetes/pkg/core"
 	log "github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
@@ -32,13 +36,36 @@ type RepoServerController struct {
 	allAppChildren       interface{}
 	queryServers         map[string]*graph.QueryServer
 	argoCDClient         argocd.ArgoCD
+	repoClient           *argocd.RepoServerManager
+}
+
+type RepoServerControllerConfig struct {
+	checkInterval            time.Duration
+	lastRunTime              time.Time
+	logLevel                 string
+	kubeConfig               string
+	trackingMethod           string
+	argocdNamespace          string
+	updateEnabled            *bool
+	updateResourceName       string
+	updateResourceKind       string
+	repoServerAddress        string
+	repoServerPlaintext      bool
+	repoServerStrictTLS      bool
+	repoServerTimeoutSeconds int
+}
+
+type manifestResponse struct {
+	children          []*unstructured.Unstructured
+	destinationConfig *rest.Config
+	appName           string
 }
 
 // newRunCommand implements "runQuery" command which executes a cyphernetes graph query against a given kubeconfig
 func newRunCommand() *cobra.Command {
-	cfg := &ResourceControllerConfig{}
-	var runQueryCmd = &cobra.Command{
-		Use:   "run-query",
+	cfg := &RepoServerControllerConfig{}
+	var runCmd = &cobra.Command{
+		Use:   "run",
 		Short: "Runs the resource-tracker which executes a graph based query to fetch the dependencies",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			log.Infof("%s %s starting [loglevel:%s, interval:%s]",
@@ -61,21 +88,26 @@ func newRunCommand() *cobra.Command {
 			return controller.initArgoApplicationRepoServerInformer(cfg)
 		},
 	}
-	runQueryCmd.Flags().StringVar(&cfg.logLevel, "loglevel", env.GetStringVal("RESOURCE_TRACKER_LOGLEVEL", "info"), "set the loglevel to one of trace|debug|info|warn|error")
-	runQueryCmd.Flags().StringVar(&cfg.kubeConfig, "kubeconfig", "", "full path to kube client configuration, i.e. ~/.kube/config")
-	runQueryCmd.Flags().StringVar(&cfg.trackingMethod, "tracking-method", graph.TrackingMethodLabel, "either label or annotation tracking used by Argo CD")
-	runQueryCmd.Flags().StringVar(&cfg.argocdNamespace, "argocd-namespace", "argocd", "namespace where argocd control plane components are running")
-	cfg.updateEnabled = runQueryCmd.Flags().Bool("update-enabled", false, "if enabled updates the argocd-cm directly, else prints the output on screen")
-	runQueryCmd.Flags().StringVar(&cfg.updateResourceName, "update-resource-name", "argocd-cm", "name of the resource that needs to be updated. Default: argocd-cm")
-	runQueryCmd.Flags().StringVar(&cfg.updateResourceKind, "update-resource-kind", "ConfigMap", "kind of resource that needs to be updated, "+
+	runCmd.Flags().StringVar(&cfg.logLevel, "loglevel", env.GetStringVal("RESOURCE_TRACKER_LOGLEVEL", "info"), "set the loglevel to one of trace|debug|info|warn|error")
+	runCmd.Flags().StringVar(&cfg.kubeConfig, "kubeconfig", "", "full path to kube client configuration, i.e. ~/.kube/config")
+	runCmd.Flags().StringVar(&cfg.trackingMethod, "tracking-method", graph.TrackingMethodLabel, "either label or annotation tracking used by Argo CD")
+	runCmd.Flags().StringVar(&cfg.argocdNamespace, "argocd-namespace", "argocd", "namespace where argocd control plane components are running")
+	cfg.updateEnabled = runCmd.Flags().Bool("update-enabled", false, "if enabled updates the argocd-cm directly, else prints the output on screen")
+	runCmd.Flags().StringVar(&cfg.updateResourceName, "update-resource-name", "argocd-cm", "name of the resource that needs to be updated. Default: argocd-cm")
+	runCmd.Flags().StringVar(&cfg.updateResourceKind, "update-resource-kind", "ConfigMap", "kind of resource that needs to be updated, "+
 		"users can choose to update either spec.data in argocd-cm or spec.extraConfigs in ArgoCD resource, Default: ConfigMap")
-	runQueryCmd.Flags().DurationVar(&cfg.checkInterval, "interval", DefaultCheckInterval, "interval for how often to check for updates, "+
+	runCmd.Flags().DurationVar(&cfg.checkInterval, "interval", DefaultCheckInterval, "interval for how often to check for updates, "+
 		"to avoid frequent execution of compute and memory intensive graph queries")
-	return runQueryCmd
+	runCmd.Flags().StringVar(&cfg.repoServerAddress, "repo-server", env.GetStringVal("ARGOCD_REPO_SERVER", common.DefaultRepoServerAddr), "Repo server address.")
+	runCmd.Flags().IntVar(&cfg.repoServerTimeoutSeconds, "repo-server-timeout-seconds", 60, "Repo server RPC call timeout seconds.")
+	runCmd.Flags().BoolVar(&cfg.repoServerPlaintext, "repo-server-plaintext", false, "Disable TLS on connections to repo server, Default: false")
+	runCmd.Flags().BoolVar(&cfg.repoServerStrictTLS, "repo-server-strict-tls", false, "Whether to use strict validation of the TLS cert presented by the repo server, Default: false")
+
+	return runCmd
 }
 
-func newRepoServerResourceController(cfg *ResourceControllerConfig) (*RepoServerController, error) {
-	if cfg.updateResourceKind == ConfigMapResourceKind || cfg.updateResourceName == ArgoCDResourceKind {
+func newRepoServerResourceController(cfg *RepoServerControllerConfig) (*RepoServerController, error) {
+	if cfg.updateResourceKind != ConfigMapResourceKind && cfg.updateResourceName != ArgoCDResourceKind {
 		return nil, fmt.Errorf("invalid update-resource-kind, valid values are ConfigMap and ArgoCD")
 	}
 	// First try in-cluster config
@@ -126,18 +158,24 @@ func newRepoServerResourceController(cfg *ResourceControllerConfig) (*RepoServer
 	if err != nil {
 		return nil, err
 	}
+	repoClient, err := argocd.NewRepoServerManager(config, cfg.argocdNamespace, cfg.repoServerAddress, cfg.repoServerTimeoutSeconds,
+		cfg.repoServerPlaintext, cfg.repoServerStrictTLS)
+	if err != nil {
+		return nil, err
+	}
 	return &RepoServerController{
 		dynamicClient: dynamicClient,
 		queryServers:  queryServerMap,
 		restConfig:    restConfig,
 		argoCDClient:  argoClient,
+		repoClient:    repoClient,
 	}, nil
 }
 
 // initArgoApplicationRepoServerInformer initializes the shared informers for Argo CD Application objects.
 // whenever a change to any Argo Application is detected, the graph query is executed and the resource inclusion
 // entries are computed.
-func (r *RepoServerController) initArgoApplicationRepoServerInformer(cfg *ResourceControllerConfig) error {
+func (r *RepoServerController) initArgoApplicationRepoServerInformer(cfg *RepoServerControllerConfig) error {
 	// Create a dynamic shared informer factory
 	informerFactory := dynamicinformer.NewFilteredDynamicSharedInformerFactory(r.dynamicClient, 1*time.Minute, "", nil)
 
@@ -202,30 +240,69 @@ func (r *RepoServerController) initArgoApplicationRepoServerInformer(cfg *Resour
 // settings in the argocd-cm config map if it detects any new changes compared to the previous computed value or if its
 // value is different from what is present in the argocd-cm config map.
 // if the check interval time has not passed since the previous run, then the method returns without executing any queries.
-func (r *RepoServerController) runRepoServerExecutor(cfg *ResourceControllerConfig) error {
+func (r *RepoServerController) runRepoServerExecutor(cfg *RepoServerControllerConfig) error {
 	if !cfg.lastRunTime.IsZero() && time.Since(cfg.lastRunTime) < cfg.checkInterval {
 		log.Info("skipping query executor due to last run not lapsed the check interval")
 		return nil
 	}
-	var allAppChildren []graph.ResourceInfo
-	cfg.lastRunTime = time.Now()
-	for host, qs := range r.queryServers {
-		log.Infof("Querying Argo CD application globally for application in host %s", host)
-		qs.VisitedKinds = make(map[graph.ResourceInfo]bool)
-		appChildren, err := qs.GetApplicationChildResources("", "")
-		if err != nil {
-			return err
-		}
-		log.Infof("Children of Argo CD application globally for application: %v", appChildren)
-		for appChild := range appChildren {
-			allAppChildren = append(allAppChildren, appChild)
-		}
+	log.Info("Starting resource tracking process...")
+	apps, err := r.argoCDClient.ListApplications()
+	if err != nil {
+		log.Fatalf("Error while listing applications: %v", err)
 	}
-
-	groupedKinds := graph.MergeResourceInfo(allAppChildren)
+	log.Infof("Fetched %d applications", len(apps))
+	resourceChan := make(chan manifestResponse)
+	errChan := make(chan error)
+	allAppChildren := make([]manifestResponse, 0)
+	// Launch consumer (Tracker)
+	go startResourceTrackerConsumer(resourceChan, &allAppChildren)
+	var wg sync.WaitGroup
+	for _, app := range apps {
+		wg.Add(1)
+		go func(app v1alpha1.Application) {
+			log.Infof("processing application: %s", app.Name)
+			defer wg.Done()
+			appProject, err := r.argoCDClient.GetAppProject(app)
+			if err != nil {
+				errChan <- err
+				return
+			}
+			// Get target object from repo-server
+			targetObjs, destinationConfig, err := r.repoClient.GetApplicationChildManifests(context.Background(), &app, appProject)
+			if err != nil {
+				errChan <- err
+				return
+			}
+			resourceChan <- manifestResponse{
+				children:          targetObjs,
+				destinationConfig: destinationConfig,
+				appName:           app.Name,
+			}
+			log.Infof("Fetched target manifests from repo-server for application: %s", app.Name)
+		}(app)
+	}
+	// Handle processing errors
+	go func() {
+		for err := range errChan {
+			log.Errorf("Error processing application: %v", err)
+		}
+	}()
+	log.Info("Resource tracking initiated for all applications.")
+	wg.Wait()
+	close(resourceChan)
+	log.Info("Resource channel has been closed. Resource Tracker process has completed successfully.")
+	var nestedResources = make([]graph.ResourceInfo, 0)
+	for _, appChild := range allAppChildren {
+		appGroupedResources, err := r.argoCDClient.ProcessApplication(appChild.children, appChild.appName, appChild.destinationConfig)
+		if err != nil {
+			return fmt.Errorf("error processing application: %w", err)
+		}
+		nestedResources = append(nestedResources, appGroupedResources...)
+	}
+	groupedKinds := graph.MergeResourceInfo(nestedResources)
 	missingResources, err := r.argoCDClient.GetAllMissingResources()
 	if err != nil {
-		return err
+		return fmt.Errorf("error while fetching missing resources: %v", err)
 	}
 	// Check if additional resources are missing, if so add it.
 	for _, resource := range missingResources {
@@ -236,6 +313,7 @@ func (r *RepoServerController) runRepoServerExecutor(cfg *ResourceControllerConf
 			groupedKinds[resource.APIVersion][resource.Kind] = graph.Void{}
 		}
 	}
+
 	if !*cfg.updateEnabled {
 		if !graph.IsGroupedResourceKindsEqual(r.previousGroupedKinds, groupedKinds) {
 			log.Info("direct update or argocd-cm is disabled, printing the output on terminal")
@@ -249,47 +327,27 @@ func (r *RepoServerController) runRepoServerExecutor(cfg *ResourceControllerConf
 		}
 	} else {
 		if cfg.updateResourceKind == ArgoCDResourceKind {
-			r.handUpdateInArgoCDCR(cfg, groupedKinds)
+			err = handleUpdateInArgoCDCR(r.dynamicClient, cfg.updateResourceName, cfg.argocdNamespace, groupedKinds)
+			if err != nil {
+				return err
+			}
 		} else {
-			r.handUpdateInCM(cfg, groupedKinds)
+			err = handleUpdateInCM(r.dynamicClient, cfg.argocdNamespace, groupedKinds)
+			if err != nil {
+				return err
+			}
 		}
 	}
 	r.previousGroupedKinds = groupedKinds
 	return nil
 }
 
-// handUpdateInCM handles the update of resource.inclusions settings in argocd-cm ConfigMap
-func (r *RepoServerController) handUpdateInCM(cfg *ResourceControllerConfig, groupedKinds graph.GroupedResourceKinds) error {
-	existingGroupKinds, err := graph.GetCurrentGroupedKindsFromCM(r.dynamicClient, cfg.argocdNamespace)
-	if err != nil {
-		return err
+func startResourceTrackerConsumer(resourceChan <-chan manifestResponse, allAppChildren *[]manifestResponse) {
+	// Process resources from the channel
+	// and update the tracked resources in the config
+	// This is a blocking call, so it will keep running until the channel is closed
+	for groupedResources := range resourceChan {
+		*allAppChildren = append(*allAppChildren, groupedResources)
 	}
-	if !graph.IsGroupedResourceKindsEqual(existingGroupKinds, groupedKinds) {
-		log.Infof("changes detected in resource inclusions, updating the argocd-cm configmap")
-		err = graph.UpdateResourceInclusion(r.dynamicClient, cfg.argocdNamespace, &groupedKinds)
-		if err != nil {
-			return err
-		}
-	} else {
-		log.Info("no changes detected in existing resource inclusions in argocd-cm configmap")
-	}
-	return nil
-}
 
-// handUpdateInArgoCDCR handles the update of resource.inclusions settings in ArgoCD CustomResource
-func (r *RepoServerController) handUpdateInArgoCDCR(cfg *ResourceControllerConfig, groupedKinds graph.GroupedResourceKinds) error {
-	existingGroupKinds, err := graph.GetCurrentGroupedKindsFromArgoCDCR(r.dynamicClient, cfg.updateResourceName, cfg.argocdNamespace)
-	if err != nil {
-		return err
-	}
-	if !graph.IsGroupedResourceKindsEqual(existingGroupKinds, groupedKinds) {
-		log.Infof("changes detected in resource inclusions, updating the argocd-cm configmap")
-		err = graph.UpdateResourceInclusionInArgoCDCR(r.dynamicClient, cfg.updateResourceName, cfg.argocdNamespace, &groupedKinds)
-		if err != nil {
-			return err
-		}
-	} else {
-		log.Info("no changes detected in existing resource inclusions in argocd-cm configmap")
-	}
-	return nil
 }

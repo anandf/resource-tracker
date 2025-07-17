@@ -75,7 +75,7 @@ func newRunQueryCommand() *cobra.Command {
 }
 
 func newResourceController(cfg *ResourceControllerConfig) (*ResourceController, error) {
-	if cfg.updateResourceKind == ConfigMapResourceKind || cfg.updateResourceName == ArgoCDResourceKind {
+	if cfg.updateResourceKind != ConfigMapResourceKind && cfg.updateResourceName != ArgoCDResourceKind {
 		return nil, fmt.Errorf("invalid update-resource-kind, valid values are ConfigMap and ArgoCD")
 	}
 	// First try in-cluster config
@@ -249,47 +249,18 @@ func (r *ResourceController) runQueryExecutor(cfg *ResourceControllerConfig) err
 		}
 	} else {
 		if cfg.updateResourceKind == ArgoCDResourceKind {
-			r.handUpdateInArgoCDCR(cfg, groupedKinds)
+			err = handleUpdateInArgoCDCR(r.dynamicClient, cfg.updateResourceName, cfg.argocdNamespace, groupedKinds)
+			if err != nil {
+				return err
+			}
 		} else {
-			r.handUpdateInCM(cfg, groupedKinds)
+			err = handleUpdateInCM(r.dynamicClient, cfg.argocdNamespace, groupedKinds)
+			if err != nil {
+				return err
+			}
+
 		}
 	}
 	r.previousGroupedKinds = groupedKinds
-	return nil
-}
-
-// handUpdateInCM handles the update of resource.inclusions settings in argocd-cm ConfigMap
-func (r *ResourceController) handUpdateInCM(cfg *ResourceControllerConfig, groupedKinds graph.GroupedResourceKinds) error {
-	existingGroupKinds, err := graph.GetCurrentGroupedKindsFromCM(r.dynamicClient, cfg.argocdNamespace)
-	if err != nil {
-		return err
-	}
-	if !graph.IsGroupedResourceKindsEqual(existingGroupKinds, groupedKinds) {
-		log.Infof("changes detected in resource inclusions, updating the argocd-cm configmap")
-		err = graph.UpdateResourceInclusion(r.dynamicClient, cfg.argocdNamespace, &groupedKinds)
-		if err != nil {
-			return err
-		}
-	} else {
-		log.Info("no changes detected in existing resource inclusions in argocd-cm configmap")
-	}
-	return nil
-}
-
-// handUpdateInArgoCDCR handles the update of resource.inclusions settings in ArgoCD CustomResource
-func (r *ResourceController) handUpdateInArgoCDCR(cfg *ResourceControllerConfig, groupedKinds graph.GroupedResourceKinds) error {
-	existingGroupKinds, err := graph.GetCurrentGroupedKindsFromArgoCDCR(r.dynamicClient, cfg.updateResourceName, cfg.argocdNamespace)
-	if err != nil {
-		return err
-	}
-	if !graph.IsGroupedResourceKindsEqual(existingGroupKinds, groupedKinds) {
-		log.Infof("changes detected in resource inclusions, updating the argocd-cm configmap")
-		err = graph.UpdateResourceInclusionInArgoCDCR(r.dynamicClient, cfg.updateResourceName, cfg.argocdNamespace, &groupedKinds)
-		if err != nil {
-			return err
-		}
-	} else {
-		log.Info("no changes detected in existing resource inclusions in argocd-cm configmap")
-	}
 	return nil
 }
