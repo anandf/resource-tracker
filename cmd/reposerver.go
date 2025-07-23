@@ -21,18 +21,18 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// ResourceTrackerConfig contains global configuration and required runtime data
-type ResourceTrackerConfig struct {
-	ArgocdNamespace          string
-	LogLevel                 string
-	RepoServerAddress        string
-	RepoServerPlaintext      bool
-	RepoServerStrictTLS      bool
-	RepoServerTimeoutSeconds int
+// RepoServerCommandConfig contains global configuration and required runtime data
+type RepoServerCommandConfig struct {
+	argocdNamespace          string
+	logLevel                 string
+	repoServerAddress        string
+	repoServerPlaintext      bool
+	repoServerStrictTLS      bool
+	repoServerTimeoutSeconds int
 	kubeConfig               string
 }
 
-type RunController struct {
+type RepoServerCommand struct {
 	argoCDClient argocd.ArgoCD
 	repoClient   *argocd.RepoServerManager
 }
@@ -43,7 +43,7 @@ type manifestResponse struct {
 	appName           string
 }
 
-func newRunControler(cfg *ResourceTrackerConfig) (*RunController, error) {
+func newRepoServerCommandController(cfg *RepoServerCommandConfig) (*RepoServerCommand, error) {
 	// Prepare the KUBECONFIG to connect to the Kubernetes cluster.
 	config, err := kube.GetKubeConfig(cfg.kubeConfig)
 	if err != nil {
@@ -55,24 +55,24 @@ func newRunControler(cfg *ResourceTrackerConfig) (*RunController, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to set env variable ARGOCD_FAKE_IN_CLUSTER: %w", err)
 	}
-	argoCD, err := argocd.NewArgoCD(config, cfg.ArgocdNamespace)
+	argoCD, err := argocd.NewArgoCD(config, cfg.argocdNamespace)
 	if err != nil {
 		return nil, err
 	}
-	repo, err := argocd.NewRepoServerManager(config, cfg.ArgocdNamespace, cfg.RepoServerAddress, cfg.RepoServerTimeoutSeconds,
-		cfg.RepoServerPlaintext, cfg.RepoServerStrictTLS)
+	repo, err := argocd.NewRepoServerManager(config, cfg.argocdNamespace, cfg.repoServerAddress, cfg.repoServerTimeoutSeconds,
+		cfg.repoServerPlaintext, cfg.repoServerStrictTLS)
 	if err != nil {
 		return nil, err
 	}
-	return &RunController{
+	return &RepoServerCommand{
 		argoCDClient: argoCD,
 		repoClient:   repo,
 	}, nil
 }
 
-// newRunCommand implements "run" command
-func newRunCommand() *cobra.Command {
-	cfg := &ResourceTrackerConfig{}
+// newRepoServerCommand implements "run" command
+func newRepoServerCommand() *cobra.Command {
+	cfg := &RepoServerCommandConfig{}
 	var runCmd = &cobra.Command{
 		Use:   "run",
 		Short: "Runs the resource-tracker with a set of options",
@@ -81,32 +81,32 @@ func newRunCommand() *cobra.Command {
 			log.Infof("%s %s starting [loglevel:%s]",
 				version.BinaryName(),
 				version.Version(),
-				strings.ToUpper(cfg.LogLevel),
+				strings.ToUpper(cfg.logLevel),
 			)
 			var err error
-			level, err := log.ParseLevel(cfg.LogLevel)
+			level, err := log.ParseLevel(cfg.logLevel)
 			if err != nil {
 				return fmt.Errorf("failed to parse log level: %w", err)
 			}
 			log.SetLevel(level)
-			r, err := newRunControler(cfg)
+			r, err := newRepoServerCommandController(cfg)
 			if err != nil {
 				return err
 			}
-			return r.runResourceTracker(cfg)
+			return r.execute()
 		},
 	}
-	runCmd.Flags().StringVar(&cfg.RepoServerAddress, "repo-server", env.GetStringVal("ARGOCD_REPO_SERVER", common.DefaultRepoServerAddr), "Repo server address.")
-	runCmd.Flags().StringVar(&cfg.LogLevel, "loglevel", env.GetStringVal("RESOURCE_TRACKER_LOGLEVEL", "info"), "set the loglevel to one of trace|debug|info|warn|error")
-	runCmd.Flags().IntVar(&cfg.RepoServerTimeoutSeconds, "repo-server-timeout-seconds", 60, "Repo server RPC call timeout seconds.")
-	runCmd.Flags().BoolVar(&cfg.RepoServerPlaintext, "repo-server-plaintext", false, "Disable TLS on connections to repo server, Default: false")
-	runCmd.Flags().BoolVar(&cfg.RepoServerStrictTLS, "repo-server-strict-tls", false, "Whether to use strict validation of the TLS cert presented by the repo server, Default: false")
+	runCmd.Flags().StringVar(&cfg.repoServerAddress, "repo-server", env.GetStringVal("ARGOCD_REPO_SERVER", common.DefaultRepoServerAddr), "Repo server address.")
+	runCmd.Flags().StringVar(&cfg.logLevel, "loglevel", env.GetStringVal("RESOURCE_TRACKER_LOGLEVEL", "info"), "set the loglevel to one of trace|debug|info|warn|error")
+	runCmd.Flags().IntVar(&cfg.repoServerTimeoutSeconds, "repo-server-timeout-seconds", 60, "Repo server RPC call timeout seconds.")
+	runCmd.Flags().BoolVar(&cfg.repoServerPlaintext, "repo-server-plaintext", false, "Disable TLS on connections to repo server, Default: false")
+	runCmd.Flags().BoolVar(&cfg.repoServerStrictTLS, "repo-server-strict-tls", false, "Whether to use strict validation of the TLS cert presented by the repo server, Default: false")
 	runCmd.Flags().StringVar(&cfg.kubeConfig, "kubeconfig", "", "full path to kube client configuration, i.e. ~/.kube/config")
-	runCmd.Flags().StringVar(&cfg.ArgocdNamespace, "argocd-namespace", "", "namespace where ArgoCD runs in (current namespace by default)")
+	runCmd.Flags().StringVar(&cfg.argocdNamespace, "argocd-namespace", "", "namespace where ArgoCD runs in (current namespace by default)")
 	return runCmd
 }
 
-func (r *RunController) runResourceTracker(cfg *ResourceTrackerConfig) error {
+func (r *RepoServerCommand) execute() error {
 	log.Info("Starting resource tracking process...")
 	apps, err := r.argoCDClient.ListApplications()
 	if err != nil {
@@ -161,7 +161,8 @@ func (r *RunController) runResourceTracker(cfg *ResourceTrackerConfig) error {
 		}
 		nestedResources = append(nestedResources, appGroupedResources...)
 	}
-	groupedKinds := graph.MergeResourceInfo(nestedResources)
+	groupedKinds := make(graph.GroupedResourceKinds)
+	groupedKinds.MergeResourceInfos(nestedResources)
 	missingResources, err := r.argoCDClient.GetAllMissingResources()
 	if err != nil {
 		return fmt.Errorf("error while fetching missing resources: %v", err)
@@ -176,9 +177,9 @@ func (r *RunController) runResourceTracker(cfg *ResourceTrackerConfig) error {
 		}
 	}
 
-	resourceInclusionString, err := graph.GetResourceInclusionsString(&groupedKinds)
-	if err != nil {
-		return fmt.Errorf("error while fetching resource inclusions: %v", err)
+	resourceInclusionString := groupedKinds.String()
+	if strings.HasPrefix(resourceInclusionString, "error:") {
+		return fmt.Errorf("error in yaml string of resource.inclusions: %s", resourceInclusionString)
 	}
 	fmt.Printf("resource.inclusions: |\n%sresource.exclusions: ''\n", resourceInclusionString)
 	return nil

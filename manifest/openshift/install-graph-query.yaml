@@ -23,8 +23,6 @@ spec:
             - run-query
             - --loglevel
             - info
-            - --tracking-method
-            - label
             - --update-enabled
             - "true"
             - --update-resource-kind
@@ -35,12 +33,6 @@ spec:
             - openshift-gitops
             - --interval
             - "15m"
-            - repo-server
-            - "openshift-gitops-repo-server.openshift-gitops.svc.cluster.local:8081"
-            - repo-server-plaintext
-            - "true"
-            - repo-server-strict-tls
-            - "false"
           resources:
             limits:
               cpu: "1"

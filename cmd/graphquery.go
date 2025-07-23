@@ -17,7 +17,7 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 )
 
-type RunQueryConfig struct {
+type GraphQueryConfig struct {
 	applicationName      string
 	applicationNamespace string
 	globalQuery          *bool
@@ -26,14 +26,14 @@ type RunQueryConfig struct {
 	argocdNamespace      string
 }
 
-type RunQueryController struct {
+type GraphQueryCommand struct {
 	queryServer  *graph.QueryServer
 	argoCDClient argocd.ArgoCD
 }
 
-// newRunQueryCommand implements "runQuery" command which executes a cyphernetes graph query against a given kubeconfig
-func newRunQueryCommand() *cobra.Command {
-	cfg := &RunQueryConfig{}
+// newGraphQueryCommand implements "runQuery" command which executes a cyphernetes graph query against a given kubeconfig
+func newGraphQueryCommand() *cobra.Command {
+	cfg := &GraphQueryConfig{}
 
 	var runQueryCmd = &cobra.Command{
 		Use:   "run-query",
@@ -51,14 +51,14 @@ func newRunQueryCommand() *cobra.Command {
 			}
 			log.SetLevel(level)
 			core.LogLevel = cfg.logLevel
-			r, err := newRunQuery(cfg)
+			r, err := newGraphQueryCommandController(cfg)
 			if err != nil {
 				return err
 			}
 			if err != nil {
 				return err
 			}
-			return r.runQueryExecutor(cfg)
+			return r.execute(cfg)
 		},
 	}
 	runQueryCmd.Flags().StringVar(&cfg.logLevel, "loglevel", env.GetStringVal("RESOURCE_TRACKER_LOGLEVEL", "info"), "set the loglevel to one of trace|debug|info|warn|error")
@@ -70,9 +70,9 @@ func newRunQueryCommand() *cobra.Command {
 	return runQueryCmd
 }
 
-// newRunQuery initializes the required kubernetes clients and the cyphernetes graph query executor.
+// newGraphQueryCommandController initializes the required kubernetes clients and the cyphernetes graph query executor.
 // this is an expensive operation and done only once, and the same executor is used for further graph query executions
-func newRunQuery(cfg *RunQueryConfig) (*RunQueryController, error) {
+func newGraphQueryCommandController(cfg *GraphQueryConfig) (*GraphQueryCommand, error) {
 	// First try in-cluster config
 	restConfig, err := rest.InClusterConfig()
 	if err != nil && !errors.Is(err, rest.ErrNotInCluster) {
@@ -104,14 +104,14 @@ func newRunQuery(cfg *RunQueryConfig) (*RunQueryController, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &RunQueryController{
+	return &GraphQueryCommand{
 		queryServer:  qs,
 		argoCDClient: argoCD,
 	}, nil
 }
 
-// runQueryExecutor runs the graph query, computes the resources managed via Argo CD and prints it on the terminal
-func (r *RunQueryController) runQueryExecutor(cfg *RunQueryConfig) error {
+// execute runs the graph query, computes the resources managed via Argo CD and prints it on the terminal
+func (r *GraphQueryCommand) execute(cfg *GraphQueryConfig) error {
 	log.Info("Starting query executor...")
 	var allAppChildren []graph.ResourceInfo
 	if *cfg.globalQuery {
@@ -120,7 +120,7 @@ func (r *RunQueryController) runQueryExecutor(cfg *RunQueryConfig) error {
 		if err != nil {
 			return err
 		}
-		log.Infof("Children of Argo CD application globally for application '%s': %v", cfg.applicationName, appChildren)
+		log.Infof("Children of Argo CD application globally for application '%s': %s", cfg.applicationName, appChildren.String())
 		for appChild := range appChildren {
 			allAppChildren = append(allAppChildren, appChild)
 		}
@@ -141,7 +141,8 @@ func (r *RunQueryController) runQueryExecutor(cfg *RunQueryConfig) error {
 			}
 		}
 	}
-	groupedKinds := graph.MergeResourceInfo(allAppChildren)
+	groupedKinds := make(graph.GroupedResourceKinds)
+	groupedKinds.MergeResourceInfos(allAppChildren)
 	missingResources, err := r.argoCDClient.GetAllMissingResources()
 	if err != nil {
 		return err
@@ -156,9 +157,9 @@ func (r *RunQueryController) runQueryExecutor(cfg *RunQueryConfig) error {
 		}
 	}
 
-	resourceInclusionString, err := graph.GetResourceInclusionsString(&groupedKinds)
-	if err != nil {
-		return err
+	resourceInclusionString := groupedKinds.String()
+	if strings.HasPrefix(resourceInclusionString, "error:") {
+		return fmt.Errorf("error in yaml string of resource.inclusions: %s", resourceInclusionString)
 	}
 	fmt.Printf("resource.inclusions: |\n%sresource.exclusions: ''\n", resourceInclusionString)
 	return nil

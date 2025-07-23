@@ -16,7 +16,10 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/util/retry"
 )
 
 const (
@@ -32,11 +35,14 @@ type ArgoCD interface {
 	ProcessApplication(targetObjs []*unstructured.Unstructured, destinationNS string, destinationConfig *rest.Config) ([]graph.ResourceInfo, error)
 	GetAllMissingResources() ([]graph.ResourceInfo, error)
 	GetTrackingMethod() (string, error)
+	GetCurrentResourceInclusions(gvr *schema.GroupVersionResource, resourceName, resourceNamespace string) (string, error)
+	UpdateResourceInclusions(gvr *schema.GroupVersionResource, resourceName, resourceNamespace, resourceInclusionYaml string) error
 }
 
 // Kubernetes based client
 type argocd struct {
 	kubeClient           *kube.KubeClient
+	dynamicClient        dynamic.Interface
 	applicationClientSet versioned.Interface
 	queryServers         map[string]*graph.QueryServer
 	trackingMethod       v1alpha1.TrackingMethod
@@ -56,8 +62,13 @@ func NewArgoCD(config *rest.Config, argocdNS string) (ArgoCD, error) {
 	}
 	qsMap[config.Host] = qs
 	settingsMgr := settings.NewSettingsManager(context.Background(), resourceTrackerConfig.KubeClient.Clientset, argocdNS)
+	dynamicClient, err := dynamic.NewForConfig(config)
+	if err != nil {
+		return nil, fmt.Errorf("could not create dynamic client: %w", err)
+	}
 	return &argocd{
 		kubeClient:           resourceTrackerConfig.KubeClient,
+		dynamicClient:        dynamicClient,
 		applicationClientSet: resourceTrackerConfig.ApplicationClientSet,
 		queryServers:         qsMap,
 		trackingMethod:       argo.GetTrackingMethod(settingsMgr),
@@ -147,6 +158,52 @@ func (a *argocd) GetTrackingMethod() (string, error) {
 	return a.settingsManager.GetTrackingMethod()
 }
 
+// UpdateResourceInclusions updates the resource.inclusions and resource.exclusions settings either in argocd-cm configmap or ArgoCD Custom Resource
+func (a *argocd) UpdateResourceInclusions(gvr *schema.GroupVersionResource, resourceName, resourceNamespace, resourceInclusionYaml string) error {
+	ctx := context.Background()
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		resource, err := a.dynamicClient.Resource(*gvr).Namespace(resourceNamespace).Get(ctx, resourceName, v1.GetOptions{})
+		if err != nil {
+			return fmt.Errorf("error fetching ConfigMap: %v", err)
+		}
+
+		if err := unstructured.SetNestedField(resource.Object, resourceInclusionYaml, getResourceInclusionsHierarchy(gvr)...); err != nil {
+			return fmt.Errorf("failed to set resource.inclusions value: %v", err)
+		}
+		if err := unstructured.SetNestedField(resource.Object, "", getResourceExclusionsHierarchy(gvr)...); err != nil {
+			return fmt.Errorf("failed to set resource.inclusions value: %v", err)
+		}
+		// exclude all resources that are not explicitly excluded.
+		unstructured.RemoveNestedField(resource.Object, "data", "resource.exclusions")
+
+		// perform the actual update of the configmap
+		_, err = a.dynamicClient.Resource(*gvr).Namespace(resourceNamespace).Update(ctx, resource, v1.UpdateOptions{})
+		if err != nil {
+			log.Warningf("Retrying due to conflict: %v", err)
+			return err
+		}
+		log.Infof("Resource inclusions updated successfully in %s/%s ConfigMap.", resourceName, resourceNamespace)
+		return nil
+	})
+}
+
+// GetCurrentResourceInclusions returns the resource.inclusions from argocd-cm configmap or ArgoCD Custom Resource.
+func (a *argocd) GetCurrentResourceInclusions(gvr *schema.GroupVersionResource, resourceName, resourceNamespace string) (string, error) {
+	argocdCM, err := a.dynamicClient.Resource(*gvr).Namespace(resourceNamespace).Get(context.Background(), resourceName, v1.GetOptions{})
+	if err != nil {
+		return "", fmt.Errorf("error fetching ConfigMap: %v", err)
+	}
+	resourceInclusionsYaml, found, err := unstructured.NestedString(argocdCM.Object, getResourceInclusionsHierarchy(gvr)...)
+	if err != nil {
+		return "", err
+	}
+	if !found {
+		log.Infof("resource inclusions not found in %s in namespace %s ", resourceName, resourceNamespace)
+		return "", nil
+	}
+	return resourceInclusionsYaml, nil
+}
+
 // lookupQueryServer looks up query server for a given kubeconfig
 func (a *argocd) lookupQueryServer(kubeConfig *rest.Config) (*graph.QueryServer, error) {
 	if kubeConfig == nil {
@@ -224,4 +281,20 @@ func getResourcesFromConditions(conditions []metav1.Condition) ([]graph.Resource
 		}
 	}
 	return results, nil
+}
+
+// getResourceInclusionsHierarchy returns the hierarchy path for getting or updating resource.inclusions for a given GVR
+func getResourceInclusionsHierarchy(gvr *schema.GroupVersionResource) []string {
+	if gvr.Resource == graph.ArgoCDGVR.Resource {
+		return []string{"spec", "extraConfig", "resource.inclusions"}
+	}
+	return []string{"data", "resource.inclusions"}
+}
+
+// getResourceExclusionsHierarchy returns the hierarchy path for getting or updating resource.exclusions for a given GVR
+func getResourceExclusionsHierarchy(gvr *schema.GroupVersionResource) []string {
+	if gvr.Resource == graph.ArgoCDGVR.Resource {
+		return []string{"spec", "extraConfig", "resource.exclusions"}
+	}
+	return []string{"data", "resource.exclusions"}
 }

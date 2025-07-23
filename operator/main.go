@@ -13,7 +13,7 @@ func newRootCommand() error {
 		Short: "Dynamically update resource.inclusions based on the resources managed by Argo Applications",
 	}
 
-	rootCmd.AddCommand(newRunQueryCommand())
+	rootCmd.AddCommand(newGraphQueryCommand())
 	rootCmd.AddCommand(newRunCommand())
 	err := rootCmd.Execute()
 	return err

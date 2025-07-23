@@ -5,14 +5,21 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
+	"github.com/anandf/resource-tracker/pkg/argocd"
 	"github.com/anandf/resource-tracker/pkg/graph"
+	"github.com/anandf/resource-tracker/pkg/kube"
 	log "github.com/sirupsen/logrus"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/client-go/dynamic"
+	"k8s.io/client-go/dynamic/dynamicinformer"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/cache"
 )
 
 const (
@@ -21,16 +28,136 @@ const (
 	ArgoCDResourceKind    = "ArgoCD"
 )
 
-type ResourceControllerConfig struct {
+type Executable interface {
+	execute() error
+}
+
+type BaseControllerConfig struct {
 	checkInterval      time.Duration
-	lastRunTime        time.Time
 	logLevel           string
 	kubeConfig         string
-	trackingMethod     string
 	argocdNamespace    string
 	updateEnabled      *bool
 	updateResourceName string
 	updateResourceKind string
+}
+
+type BaseController struct {
+	dynamicClient        dynamic.Interface
+	restConfig           *rest.Config
+	previousGroupedKinds graph.GroupedResourceKinds
+	queryServers         map[string]*graph.QueryServer
+	argoCDClient         argocd.ArgoCD
+	lastRunTime          time.Time
+}
+
+func newBaseController(cfg *BaseControllerConfig) (*BaseController, error) {
+	if cfg.updateResourceKind != ConfigMapResourceKind && cfg.updateResourceName != ArgoCDResourceKind {
+		return nil, fmt.Errorf("invalid update-resource-kind, valid values are ConfigMap and ArgoCD")
+	}
+	restConfig, err := kube.GetKubeConfig(cfg.kubeConfig)
+	if err != nil {
+		return nil, err
+	}
+	dynamicClient, err := dynamic.NewForConfig(restConfig)
+	if err != nil {
+		return nil, err
+	}
+
+	queryServerMap := map[string]*graph.QueryServer{}
+	clusterConfigs, err := listClusterConfigs(dynamicClient, cfg.argocdNamespace)
+	if err != nil {
+		return nil, err
+	}
+	clusterConfigs = append(clusterConfigs, restConfig)
+	argoClient, err := argocd.NewArgoCD(restConfig, cfg.argocdNamespace)
+	if err != nil {
+		return nil, err
+	}
+	trackingMethod, err := argoClient.GetTrackingMethod()
+	if err != nil {
+		return nil, err
+	}
+	for _, clusterConfig := range clusterConfigs {
+		if len(clusterConfig.Host) == 0 {
+			continue
+		}
+		queryServer, err := graph.NewQueryServer(clusterConfig, trackingMethod, true)
+		if err != nil {
+			return nil, err
+		}
+		queryServerMap[clusterConfig.Host] = queryServer
+	}
+	return &BaseController{
+		dynamicClient: dynamicClient,
+		restConfig:    restConfig,
+		queryServers:  queryServerMap,
+		argoCDClient:  argoClient,
+	}, nil
+}
+
+// initApplicationInformer initializes the shared informers for Argo CD Application objects.
+// whenever a change to any Argo Application is detected, the graph query is executed and the resource inclusion
+// entries are computed.
+func initApplicationInformer(dynamicClient dynamic.Interface, executor Executable) error {
+	// Create a dynamic shared informer factory
+	informerFactory := dynamicinformer.NewFilteredDynamicSharedInformerFactory(dynamicClient, 1*time.Minute, "", nil)
+
+	// Get the informer for the specified GVR
+	informer := informerFactory.ForResource(graph.ArgoAppGVR).Informer()
+
+	// Add event handlers
+	_, err := informer.AddEventHandler(cache.ResourceEventHandlerFuncs{
+		AddFunc: func(obj interface{}) {
+			unstructuredObj := obj.(*unstructured.Unstructured)
+			log.Infof("Object Added: %s/%s", unstructuredObj.GetNamespace(), unstructuredObj.GetName())
+			if err := executor.execute(); err != nil {
+				log.Error(err)
+			}
+		},
+		UpdateFunc: func(oldObj, newObj interface{}) {
+			oldUnstructured := oldObj.(*unstructured.Unstructured)
+			newUnstructured := newObj.(*unstructured.Unstructured)
+			log.Infof("Object Updated: %s/%s (ResourceVersion: %s -> %s)",
+				newUnstructured.GetNamespace(), newUnstructured.GetName(),
+				oldUnstructured.GetResourceVersion(), newUnstructured.GetResourceVersion())
+			if err := executor.execute(); err != nil {
+				log.Error(err)
+			}
+		},
+		DeleteFunc: func(obj interface{}) {
+			unstructuredObj := obj.(*unstructured.Unstructured)
+			log.Infof("Object Deleted: %s/%s", unstructuredObj.GetNamespace(), unstructuredObj.GetName())
+			if err := executor.execute(); err != nil {
+				log.Error(err)
+			}
+		},
+	})
+	if err != nil {
+		return err
+	}
+
+	// Set up a stop channel for graceful shutdown
+	stopCh := make(chan struct{})
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+
+	// Start the informer factory
+	informerFactory.Start(stopCh)
+
+	// Wait for the informer's cache to sync
+	if !cache.WaitForCacheSync(stopCh, informer.HasSynced) {
+		log.Warn("Failed to sync informer cache")
+		close(stopCh)
+		return nil
+	}
+	log.Info("Informer for argo applications started successfully.")
+
+	// Keep the main goroutine running until a signal is received
+	<-sigCh
+	log.Info("Received termination signal, stopping informer...")
+	close(stopCh)
+	return nil
 }
 
 // Reads all the cluster credential secrets in the cluster and returns the kubeconfig instance
@@ -74,14 +201,19 @@ func listClusterConfigs(dynamicClient dynamic.Interface, argocdNS string) ([]*re
 }
 
 // handleUpdateInArgoCDCR handles the update of resource.inclusions settings in ArgoCD CustomResource
-func handleUpdateInArgoCDCR(dynamicClient dynamic.Interface, resourceName, resourceNamespace string, groupedKinds graph.GroupedResourceKinds) error {
-	existingGroupKinds, err := graph.GetCurrentGroupedKindsFromArgoCDCR(dynamicClient, resourceName, resourceNamespace)
+func handleUpdateInArgoCDCR(argoCDClient argocd.ArgoCD, resourceName, resourceNamespace string, groupedKinds graph.GroupedResourceKinds) error {
+	currentResourceInclusions, err := argoCDClient.GetCurrentResourceInclusions(&graph.ArgoCDGVR, resourceName, resourceNamespace)
 	if err != nil {
 		return err
 	}
-	if !graph.IsGroupedResourceKindsEqual(existingGroupKinds, groupedKinds) {
+	existingGroupKinds := make(graph.GroupedResourceKinds)
+	err = existingGroupKinds.FromYaml(currentResourceInclusions)
+	if err != nil {
+		return err
+	}
+	if !existingGroupKinds.Equal(&groupedKinds) {
 		log.Infof("changes detected in resource inclusions, updating the argocd-cm configmap")
-		err = graph.UpdateResourceInclusionInArgoCDCR(dynamicClient, resourceName, resourceNamespace, &groupedKinds)
+		err = argoCDClient.UpdateResourceInclusions(&graph.ArgoCDGVR, resourceName, resourceNamespace, groupedKinds.String())
 		if err != nil {
 			return err
 		}
@@ -92,14 +224,19 @@ func handleUpdateInArgoCDCR(dynamicClient dynamic.Interface, resourceName, resou
 }
 
 // handleUpdateInCM handles the update of resource.inclusions settings in argocd-cm ConfigMap
-func handleUpdateInCM(dynamicClient dynamic.Interface, resourceNamespace string, groupedKinds graph.GroupedResourceKinds) error {
-	existingGroupKinds, err := graph.GetCurrentGroupedKindsFromCM(dynamicClient, resourceNamespace)
+func handleUpdateInCM(argoCDClient argocd.ArgoCD, resourceNamespace string, groupedKinds graph.GroupedResourceKinds) error {
+	currentResourceInclusions, err := argoCDClient.GetCurrentResourceInclusions(&graph.ConfigMapGVR, "argocd-cm", resourceNamespace)
 	if err != nil {
 		return err
 	}
-	if !graph.IsGroupedResourceKindsEqual(existingGroupKinds, groupedKinds) {
+	existingGroupKinds := make(graph.GroupedResourceKinds)
+	err = existingGroupKinds.FromYaml(currentResourceInclusions)
+	if err != nil {
+		return err
+	}
+	if !existingGroupKinds.Equal(&groupedKinds) {
 		log.Infof("changes detected in resource inclusions, updating the argocd-cm configmap")
-		err = graph.UpdateResourceInclusion(dynamicClient, resourceNamespace, &groupedKinds)
+		err = argoCDClient.UpdateResourceInclusions(&graph.ConfigMapGVR, "argocd-cm", resourceNamespace, groupedKinds.String())
 		if err != nil {
 			return err
 		}
