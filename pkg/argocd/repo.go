@@ -26,16 +26,25 @@ type clusterAPIDetails struct {
 	APIResources []kube.APIResourceInfo
 }
 
-type repoServerManager struct {
+type RepoServerManager struct {
 	db            db.ArgoDB
 	settingsMgr   *settings.SettingsManager
 	repoClientset apiclient.Clientset
 	kubectl       kube.Kubectl
+	controllerNS  string
 }
 
-func NewRepoServerManager(kubeClient kubernetes.Interface, controllerNamespace string, repoServerAddress string, repoServerTimeoutSeconds int, repoServerPlaintext bool, repoServerStrictTLS bool) *repoServerManager {
-	settingsMgr := settings.NewSettingsManager(context.Background(), kubeClient, controllerNamespace)
-	dbInstance := db.NewDB(controllerNamespace, settingsMgr, kubeClient)
+func NewRepoServerManager(kubeConfig *rest.Config,
+	controllerNamespace string, repoServerAddress string,
+	repoServerTimeoutSeconds int,
+	repoServerPlaintext bool,
+	repoServerStrictTLS bool) (*RepoServerManager, error) {
+	clientSet, err := kubernetes.NewForConfig(kubeConfig)
+	if err != nil {
+		return nil, err
+	}
+	settingsMgr := settings.NewSettingsManager(context.Background(), clientSet, controllerNamespace)
+	dbInstance := db.NewDB(controllerNamespace, settingsMgr, clientSet)
 	tlsConfig := apiclient.TLSConfiguration{
 		DisableTLS:       repoServerPlaintext,
 		StrictValidation: repoServerStrictTLS,
@@ -46,25 +55,26 @@ func NewRepoServerManager(kubeClient kubernetes.Interface, controllerNamespace s
 			fmt.Sprintf("%s/reposerver/tls/ca.crt", env.StringFromEnv(common.EnvAppConfigPath, common.DefaultAppConfigPath)),
 		)
 		if err != nil {
-			log.Fatalf("Failed to load tls certs: %v", err)
+			return nil, fmt.Errorf("failed to load tls certs: %w", err)
 		}
 		tlsConfig.Certificates = pool
 	}
 	repoClientset := apiclient.NewRepoServerClientset(repoServerAddress, repoServerTimeoutSeconds, tlsConfig)
 	kubectl := kubeutil.NewKubectl()
 
-	return &repoServerManager{
+	return &RepoServerManager{
 		db:            dbInstance,
 		settingsMgr:   settingsMgr,
 		repoClientset: repoClientset,
 		kubectl:       kubectl,
-	}
+		controllerNS:  controllerNamespace,
+	}, nil
 }
 
-// getApplicationChildManifests fetches manifests and filters direct child resources
-func getApplicationChildManifests(ctx context.Context, application *appsv1alpha1.Application, proj *appsv1alpha1.AppProject, controllerNamespace string, repoServerManager *repoServerManager) ([]*unstructured.Unstructured, *rest.Config, error) {
+// GetApplicationChildManifests fetches manifests and filters direct child resources
+func (r *RepoServerManager) GetApplicationChildManifests(ctx context.Context, application *appsv1alpha1.Application, proj *appsv1alpha1.AppProject) ([]*unstructured.Unstructured, *rest.Config, error) {
 	// Fetch Helm repositories
-	helmRepos, err := repoServerManager.db.ListHelmRepositories(ctx)
+	helmRepos, err := r.db.ListHelmRepositories(ctx)
 	if err != nil {
 		return nil, nil, fmt.Errorf("error fetching Helm repositories: %w", err)
 	}
@@ -74,7 +84,7 @@ func getApplicationChildManifests(ctx context.Context, application *appsv1alpha1
 		return nil, nil, fmt.Errorf("error filtering permitted Helm repositories: %w", err)
 	}
 	// Fetch Helm repository credentials
-	helmRepositoryCredentials, err := repoServerManager.db.GetAllHelmRepositoryCredentials(ctx)
+	helmRepositoryCredentials, err := r.db.GetAllHelmRepositoryCredentials(ctx)
 	if err != nil {
 		return nil, nil, fmt.Errorf("error fetching Helm repository credentials: %w", err)
 	}
@@ -84,21 +94,21 @@ func getApplicationChildManifests(ctx context.Context, application *appsv1alpha1
 		return nil, nil, fmt.Errorf("error filtering permitted Helm credentials: %w", err)
 	}
 	// Get enabled source types
-	enabledSourceTypes, err := repoServerManager.settingsMgr.GetEnabledSourceTypes()
+	enabledSourceTypes, err := r.settingsMgr.GetEnabledSourceTypes()
 	if err != nil {
 		return nil, nil, fmt.Errorf("error getting enabled source types: %w", err)
 	}
 	// Fetch Helm settings
-	helmOptions, err := repoServerManager.settingsMgr.GetHelmSettings()
+	helmOptions, err := r.settingsMgr.GetHelmSettings()
 	if err != nil {
 		return nil, nil, fmt.Errorf("error fetching Helm settings: %w", err)
 	}
 	// Get installation ID
-	installationID, err := repoServerManager.settingsMgr.GetInstallationID()
+	installationID, err := r.settingsMgr.GetInstallationID()
 	if err != nil {
 		return nil, nil, fmt.Errorf("error getting installation ID: %w", err)
 	}
-	kustomizeSettings, err := repoServerManager.settingsMgr.GetKustomizeSettings()
+	kustomizeSettings, err := r.settingsMgr.GetKustomizeSettings()
 	if err != nil {
 		return nil, nil, fmt.Errorf("error fetching Kustomize settings: %w", err)
 	}
@@ -107,21 +117,21 @@ func getApplicationChildManifests(ctx context.Context, application *appsv1alpha1
 		if application.Spec.Destination.Name == "" {
 			return nil, nil, fmt.Errorf("both destination server and name are empty")
 		}
-		server, err = getDestinationServer(ctx, repoServerManager.db, application.Spec.Destination.Name)
+		server, err = getDestinationServer(ctx, r.db, application.Spec.Destination.Name)
 		if err != nil {
 			return nil, nil, fmt.Errorf("error getting cluster: %w", err)
 		}
 	}
-	cluster, err := repoServerManager.db.GetCluster(ctx, server)
+	cluster, err := r.db.GetCluster(ctx, server)
 	if err != nil {
 		return nil, nil, fmt.Errorf("error getting cluster: %w", err)
 	}
-	clusterAPIDetails, err := getClusterAPIDetails(cluster.RESTConfig(), repoServerManager.kubectl)
+	clusterAPIDetails, err := getClusterAPIDetails(cluster.RESTConfig(), r.kubectl)
 	if err != nil {
 		return nil, nil, fmt.Errorf("error fetching cluster API details: %w", err)
 	}
 	// Establish a connection with the repo-server
-	conn, repoClient, err := repoServerManager.repoClientset.NewRepoServerClient()
+	conn, repoClient, err := r.repoClientset.NewRepoServerClient()
 	if err != nil {
 		return nil, nil, fmt.Errorf("error connecting to repo-server: %w", err)
 	}
@@ -138,13 +148,13 @@ func getApplicationChildManifests(ctx context.Context, application *appsv1alpha1
 		revisions = append(revisions, revision)
 		sources = append(sources, application.Spec.GetSource())
 	}
-	refSources, err := argo.GetRefSources(ctx, sources, application.Spec.Project, repoServerManager.db.GetRepository, revisions, false)
+	refSources, err := argo.GetRefSources(ctx, sources, application.Spec.Project, r.db.GetRepository, revisions, false)
 	if err != nil {
 		return nil, nil, fmt.Errorf("error getting ref sources: %w", err)
 	}
 	targetObjs := make([]*unstructured.Unstructured, 0)
 	for i, source := range sources {
-		repo, err := repoServerManager.db.GetRepository(ctx, source.RepoURL, proj.Name)
+		repo, err := r.db.GetRepository(ctx, source.RepoURL, proj.Name)
 		if err != nil {
 			return nil, nil, fmt.Errorf("error fetching repository: %w", err)
 		}
@@ -157,14 +167,14 @@ func getApplicationChildManifests(ctx context.Context, application *appsv1alpha1
 			Repo:               repo,
 			Repos:              permittedHelmRepos,
 			Revision:           revisions[i],
-			AppName:            application.InstanceName(controllerNamespace),
+			AppName:            application.InstanceName(r.controllerNS),
 			Namespace:          application.Spec.Destination.Namespace,
 			ApplicationSource:  &source,
 			KustomizeOptions:   kustomizeOptions,
 			KubeVersion:        clusterAPIDetails.APIVersions,
 			ApiVersions:        argo.APIResourcesToStrings(clusterAPIDetails.APIResources, true),
 			HelmRepoCreds:      permittedHelmCredentials,
-			TrackingMethod:     string(argo.GetTrackingMethod(repoServerManager.settingsMgr)),
+			TrackingMethod:     string(argo.GetTrackingMethod(r.settingsMgr)),
 			EnabledSourceTypes: enabledSourceTypes,
 			HelmOptions:        helmOptions,
 			HasMultipleSources: application.Spec.HasMultipleSources(),
