@@ -104,20 +104,23 @@ func (a *appClient) GetApplication(ctx context.Context, appName, appNamespace st
 	return appSetClient.Get(ctx, query)
 }
 
-func (a *appClient) ListApplications(ctx context.Context, labelSelector string) ([]v1alpha1.Application, error) {
+func (a *appClient) ListApplications(ctx context.Context, controllerNamespace string) ([]v1alpha1.Application, error) {
+	var applications []v1alpha1.Application
 	conn, appSetClient, err := a.client.NewApplicationClient()
 	if err != nil {
 		return nil, fmt.Errorf("failed to create Application client: %w", err)
 	}
 	defer conn.Close()
-	query := &application.ApplicationQuery{
-		Selector: &labelSelector,
-	}
-	appList, err := appSetClient.List(ctx, query)
+	appList, err := appSetClient.List(ctx, &application.ApplicationQuery{})
 	if err != nil {
 		return nil, fmt.Errorf("failed to list applications: %w", err)
 	}
-	return appList.Items, nil
+	for _, app := range appList.Items {
+		if app.Status.ControllerNamespace == controllerNamespace {
+			applications = append(applications, app)
+		}
+	}
+	return applications, nil
 }
 
 func (a *appClient) GetAppProject(ctx context.Context, name string) (*v1alpha1.AppProject, error) {
