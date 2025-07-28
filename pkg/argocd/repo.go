@@ -186,18 +186,6 @@ func getApplicationChildManifests(ctx context.Context, application *appsv1alpha1
 	return targetObjs, cluster.RESTConfig(), nil
 }
 
-func unmarshalManifests(manifests []string) ([]*unstructured.Unstructured, error) {
-	targetObjs := make([]*unstructured.Unstructured, 0)
-	for _, manifest := range manifests {
-		obj, err := appsv1alpha1.UnmarshalToUnstructured(manifest)
-		if err != nil {
-			return nil, err
-		}
-		targetObjs = append(targetObjs, obj)
-	}
-	return targetObjs, nil
-}
-
 // getClusterAPIDetails retrieves the server version and API resources from the Kubernetes cluster
 func getClusterAPIDetails(config *rest.Config, kubectl kube.Kubectl) (*clusterAPIDetails, error) {
 	// Retrieve the server version

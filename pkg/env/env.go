@@ -2,6 +2,7 @@ package env
 
 import (
 	"os"
+	"strings"
 )
 
 // Package env provides some utility functions to interact with the environment
@@ -15,4 +16,15 @@ func GetStringVal(envVar string, defaultValue string) string {
 	} else {
 		return defaultValue
 	}
+}
+
+func GetBoolVal(envVar string, defaultValue bool) bool {
+	if val := os.Getenv(envVar); val != "" {
+		if strings.ToLower(val) == "true" {
+			return true
+		} else if strings.ToLower(val) == "false" {
+			return false
+		}
+	}
+	return defaultValue
 }
