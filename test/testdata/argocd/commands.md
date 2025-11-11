@@ -22,7 +22,7 @@ deployment.apps/openshift-gitops-operator-controller-manager scaled
 ```
 ## Start the Resource tracker deployment
 ```shell
-oc apply -f manifest/openshift/install-deployment.yaml
+oc apply -f manifest/openshift/install-graph-query.yaml
 ```
 
 ## Check the logs

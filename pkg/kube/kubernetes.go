@@ -2,10 +2,12 @@ package kube
 
 import (
 	"context"
-	"os"
+	"errors"
+	"fmt"
 
 	"github.com/argoproj/argo-cd/v2/pkg/client/clientset/versioned"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 )
 
@@ -28,32 +30,14 @@ func NewKubernetesClient(ctx context.Context, client kubernetes.Interface, names
 	return kc
 }
 
-// NewKubernetesClient creates a new Kubernetes client object from given
-// configuration file. If configuration file is the empty string, in-cluster
-// client will be created.
-func NewKubernetesClientFromConfig(ctx context.Context, namespace string, kubeconfig string) (*ResourceTrackerKubeClient, error) {
-	loadingRules := clientcmd.NewDefaultClientConfigLoadingRules()
-	loadingRules.DefaultClientConfig = &clientcmd.DefaultClientConfig
-	loadingRules.ExplicitPath = kubeconfig
-	overrides := clientcmd.ConfigOverrides{}
-	clientConfig := clientcmd.NewInteractiveDeferredLoadingClientConfig(loadingRules, &overrides, os.Stdin)
-
-	config, err := clientConfig.ClientConfig()
+// NewKubernetesClientFromConfig creates a new Kubernetes client object from given
+// rest.Config object.
+func NewKubernetesClientFromConfig(ctx context.Context, namespace string, kubeConfig *rest.Config) (*ResourceTrackerKubeClient, error) {
+	clientset, err := kubernetes.NewForConfig(kubeConfig)
 	if err != nil {
 		return nil, err
 	}
-
-	if namespace == "" {
-		namespace, _, err = clientConfig.Namespace()
-		if err != nil {
-			return nil, err
-		}
-	}
-	clientset, err := kubernetes.NewForConfig(config)
-	if err != nil {
-		return nil, err
-	}
-	applicationsClientset, err := versioned.NewForConfig(config)
+	applicationsClientset, err := versioned.NewForConfig(kubeConfig)
 	if err != nil {
 		return nil, err
 	}
@@ -62,4 +46,30 @@ func NewKubernetesClientFromConfig(ctx context.Context, namespace string, kubeco
 	kc.ApplicationClientSet = applicationsClientset
 	kc.KubeClient = NewKubernetesClient(ctx, clientset, namespace)
 	return kc, nil
+}
+
+func GetKubeConfig(kubeconfigPath string) (*rest.Config, error) {
+	var restConfig *rest.Config
+	// If caller did not provide a kubeconfig, try in-cluster config first
+
+	restConfig, err := rest.InClusterConfig()
+	if err != nil && !errors.Is(err, rest.ErrNotInCluster) {
+		return nil, fmt.Errorf("failed to create config: %v", err)
+	}
+
+	// If the binary is not being run inside a kubernetes cluster,
+	// nor the caller provided a kubeconfig,
+	// try loading the config from KUBECONFIG env or $HOME/.kube/config file
+	if restConfig == nil {
+		loadingRules := clientcmd.NewDefaultClientConfigLoadingRules()
+		loadingRules.DefaultClientConfig = &clientcmd.DefaultClientConfig
+		loadingRules.ExplicitPath = kubeconfigPath
+		configOverrides := &clientcmd.ConfigOverrides{}
+		kubeConfig := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(loadingRules, configOverrides)
+		restConfig, err = kubeConfig.ClientConfig()
+		if err != nil {
+			return nil, fmt.Errorf("failed to create config: %v", err)
+		}
+	}
+	return restConfig, nil
 }

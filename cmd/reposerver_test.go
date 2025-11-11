@@ -11,7 +11,7 @@ import (
 // TestNewRunCommand tests various flags and their default values.
 func TestNewRunCommand(t *testing.T) {
 	asser := assert.New(t)
-	runCmd := newRunCommand()
+	runCmd := newRepoServerCommand()
 	asser.Contains(runCmd.Use, "run")
 	asser.Greater(len(runCmd.Short), 25)
 	asser.NotNil(runCmd.RunE)
