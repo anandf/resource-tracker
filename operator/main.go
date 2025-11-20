@@ -14,7 +14,6 @@ func newRootCommand() error {
 	}
 
 	rootCmd.AddCommand(newGraphQueryCommand())
-	rootCmd.AddCommand(newRunCommand())
 	err := rootCmd.Execute()
 	return err
 }

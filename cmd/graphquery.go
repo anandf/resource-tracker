@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/anandf/resource-tracker/pkg/argocd"
+	"github.com/anandf/resource-tracker/pkg/common"
 	"github.com/anandf/resource-tracker/pkg/env"
 	"github.com/anandf/resource-tracker/pkg/graph"
 	"github.com/anandf/resource-tracker/pkg/version"
@@ -17,15 +18,6 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 )
 
-type GraphQueryConfig struct {
-	applicationName      string
-	applicationNamespace string
-	globalQuery          *bool
-	logLevel             string
-	kubeConfig           string
-	argocdNamespace      string
-}
-
 type GraphQueryCommand struct {
 	queryServer  *graph.QueryServer
 	argoCDClient argocd.ArgoCD
@@ -33,7 +25,7 @@ type GraphQueryCommand struct {
 
 // newGraphQueryCommand implements "runQuery" command which executes a cyphernetes graph query against a given kubeconfig
 func newGraphQueryCommand() *cobra.Command {
-	cfg := &GraphQueryConfig{}
+	cfg := &QueryConfig{}
 
 	var runQueryCmd = &cobra.Command{
 		Use:   "run-query",
@@ -72,7 +64,7 @@ func newGraphQueryCommand() *cobra.Command {
 
 // newGraphQueryCommandController initializes the required kubernetes clients and the cyphernetes graph query executor.
 // this is an expensive operation and done only once, and the same executor is used for further graph query executions
-func newGraphQueryCommandController(cfg *GraphQueryConfig) (*GraphQueryCommand, error) {
+func newGraphQueryCommandController(cfg *QueryConfig) (*GraphQueryCommand, error) {
 	// First try in-cluster config
 	restConfig, err := rest.InClusterConfig()
 	if err != nil && !errors.Is(err, rest.ErrNotInCluster) {
@@ -92,7 +84,7 @@ func newGraphQueryCommandController(cfg *GraphQueryConfig) (*GraphQueryCommand, 
 		}
 	}
 
-	argoCD, err := argocd.NewArgoCD(restConfig, cfg.argocdNamespace)
+	argoCD, err := argocd.NewArgoCD(restConfig, cfg.argocdNamespace, cfg.applicationNamespace)
 	if err != nil {
 		return nil, err
 	}
@@ -111,9 +103,9 @@ func newGraphQueryCommandController(cfg *GraphQueryConfig) (*GraphQueryCommand, 
 }
 
 // execute runs the graph query, computes the resources managed via Argo CD and prints it on the terminal
-func (r *GraphQueryCommand) execute(cfg *GraphQueryConfig) error {
+func (r *GraphQueryCommand) execute(cfg *QueryConfig) error {
 	log.Info("Starting query executor...")
-	var allAppChildren []graph.ResourceInfo
+	var allAppChildren []common.ResourceInfo
 	if *cfg.globalQuery {
 		log.Infof("Querying Argo CD application globally for application '%s'...", cfg.applicationName)
 		appChildren, err := r.queryServer.GetApplicationChildResources(cfg.applicationName, "")
@@ -141,7 +133,7 @@ func (r *GraphQueryCommand) execute(cfg *GraphQueryConfig) error {
 			}
 		}
 	}
-	groupedKinds := make(graph.GroupedResourceKinds)
+	groupedKinds := make(common.GroupedResourceKinds)
 	groupedKinds.MergeResourceInfos(allAppChildren)
 	missingResources, err := r.argoCDClient.GetAllMissingResources()
 	if err != nil {
@@ -150,10 +142,10 @@ func (r *GraphQueryCommand) execute(cfg *GraphQueryConfig) error {
 	// Check if additional resources are missing, if so add it.
 	for _, resource := range missingResources {
 		log.Infof("adding missing resource '%v'", resource)
-		if kindMap, ok := groupedKinds[resource.APIVersion]; !ok && kindMap == nil {
-			groupedKinds[resource.APIVersion] = graph.Kinds{resource.Kind: graph.Void{}}
+		if kindMap, ok := groupedKinds[resource.Group]; !ok && kindMap == nil {
+			groupedKinds[resource.Group] = common.Kinds{resource.Kind: common.Void{}}
 		} else {
-			groupedKinds[resource.APIVersion][resource.Kind] = graph.Void{}
+			groupedKinds[resource.Group][resource.Kind] = common.Void{}
 		}
 	}
 
