@@ -14,6 +14,7 @@ import (
 	"github.com/anandf/resource-tracker/pkg/common"
 	"github.com/anandf/resource-tracker/pkg/graph"
 	"github.com/anandf/resource-tracker/pkg/kube"
+	argocdcommon "github.com/argoproj/argo-cd/v3/common"
 	log "github.com/sirupsen/logrus"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -71,7 +72,15 @@ func newBaseController(cfg *BaseControllerConfig) (*BaseController, error) {
 		return nil, err
 	}
 	clusterConfigs = append(clusterConfigs, restConfig)
-	argoClient, err := argocd.NewArgoCD(restConfig, cfg.argocdNamespace, "")
+	argoClient, err := argocd.NewArgoCD(
+		restConfig,
+		cfg.argocdNamespace,
+		"",
+		argocdcommon.DefaultRepoServerAddr,
+		10,
+		false,
+		false,
+	)
 	if err != nil {
 		return nil, err
 	}

@@ -1,4 +1,4 @@
-package resourcegraph
+package dynamic
 
 import (
 	"context"
@@ -128,7 +128,7 @@ func NewResourceMapper(destinationConfig *rest.Config) (*ResourceMapper, error) 
 	}
 
 	if err := rm.Init(); err != nil {
-		log.Errorf("Error loading native resources: %v", err)
+		return nil, fmt.Errorf("failed to contact cluster: %w", err)
 	}
 
 	// Set up event handlers
@@ -329,7 +329,7 @@ func (r *ResourceMapper) GetClusterResourcesRelation(ctx context.Context) (map[s
 // from the provided resources, using the relation cache.
 func GetResourceRelation(
 	resourceRelation map[string]*hashset.Set,
-	directChildren []common.ResourceInfo,
+	directChildren []*common.ResourceInfo,
 ) []common.ResourceInfo {
 	visitedKeys := make(map[string]struct{})
 	for _, direct := range directChildren {

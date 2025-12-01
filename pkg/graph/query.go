@@ -295,11 +295,13 @@ func extractResourceInfo(queryResult *core.QueryResult, variable string) ([]*com
 			log.Infof("ignoring resource of kind: %v", info["kind"])
 			continue
 		}
-		apiVersion := info["apiVersion"].(string)
-		groupVersion := strings.Split(apiVersion, "/")[0]
+		apiVersion, _ := info["apiVersion"].(string)
 		group := ""
-		if len(groupVersion) > 1 {
-			group = string(groupVersion[0])
+		if apiVersion != "" {
+			parts := strings.Split(apiVersion, "/")
+			if len(parts) == 2 {
+				group = parts[0]
+			}
 		}
 		resourceInfo := common.ResourceInfo{
 			Kind:  info["kind"].(string),
