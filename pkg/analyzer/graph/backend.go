@@ -60,41 +60,45 @@ func (b *Backend) Execute(ctx context.Context, opts analyzer.Options) (*common.G
 
 	var allAppChildren []*common.ResourceInfo
 	if opts.TargetApp != "" {
-		if opts.TargetApp == "" {
-			return nil, fmt.Errorf("global graph query requires TargetApp to be set")
-		}
 		appLogger := logger.WithField("applicationName", opts.TargetApp)
 		appLogger.Infof("Processing application")
 		argoApp, err := argoCDClient.GetApplication(opts.TargetApp)
 		if err != nil {
+			// If the application itself cannot be fetched, fail fast.
 			return nil, err
 		}
-		qs, err := b.getQueryServerForApp(ctx, argoCDClient, argoApp, opts.KubeConfigPath, trackingMethod, logger)
-		if err != nil {
-			return nil, err
-		}
-		appChildren, err := argoCDClient.GetApplicationChildManifests(ctx, argoApp, opts.KubeConfigPath, "")
-		if err != nil {
-			appLogger.WithError(err).Error("Error getting application children")
-			return nil, err
-		}
-		appLogger.Debugf("Children of Argo CD application %q: %v", argoApp.Name, appChildren)
-		for _, appChild := range appChildren {
-			childResources, err := qs.GetNestedChildResources(appChild)
+
+		// Try to resolve and traverse the destination cluster; on failure just log
+		// and fall back to status-based resources.
+		if qs, err := b.getQueryServerForApp(ctx, argoCDClient, argoApp, opts.KubeConfigPath, trackingMethod, appLogger); err != nil {
+			appLogger.WithError(err).Error("Error getting query server for destination cluster")
+		} else {
+			appChildren, err := argoCDClient.GetApplicationChildManifests(ctx, argoApp, opts.KubeConfigPath, "")
 			if err != nil {
-				appLogger.WithError(err).Error("Error getting nested child resources")
-				return nil, err
-			}
-			for childResource := range childResources {
-				allAppChildren = append(allAppChildren, &childResource)
+				appLogger.WithError(err).Error("Error getting application children")
+			} else {
+				appLogger.Debugf("Children of Argo CD application %q: %v", argoApp.Name, appChildren)
+				for _, appChild := range appChildren {
+					childResources, err := qs.GetNestedChildResources(appChild)
+					if err != nil {
+						appLogger.WithError(err).Error("Error getting nested child resources")
+						continue
+					}
+					for childResource := range childResources {
+						allAppChildren = append(allAppChildren, &childResource)
+					}
+				}
 			}
 		}
+
+		// Always try to augment with resources inferred from Application.status,
+		// even if graph traversal failed.
 		resources, err := argoCDClient.GetResourcesFromApplicationStatus(ctx, argoApp)
 		if err != nil {
 			appLogger.WithError(err).Error("Error getting resources from application status")
-			return nil, err
+		} else {
+			allAppChildren = append(allAppChildren, resources...)
 		}
-		allAppChildren = append(allAppChildren, resources...)
 	} else {
 		argoApps, err := argoCDClient.ListApplications()
 		if err != nil {
@@ -108,24 +112,26 @@ func (b *Backend) Execute(ctx context.Context, opts analyzer.Options) (*common.G
 			appChildren, err := argoCDClient.GetApplicationChildManifests(ctx, &argoApp, opts.KubeConfigPath, "")
 			if err != nil {
 				appLogger.WithError(err).Error("Error getting application children")
-				continue
 			}
-			qs, err := b.getQueryServerForApp(ctx, argoCDClient, &argoApp, opts.KubeConfigPath, trackingMethod, logger)
-			if err != nil {
+			// Try to resolve and traverse the destination cluster; on failure just
+			// log and fall back to status-based resources.
+			if qs, err := b.getQueryServerForApp(ctx, argoCDClient, &argoApp, opts.KubeConfigPath, trackingMethod, logger); err != nil {
 				appLogger.WithError(err).Error("Error getting query server for application")
-				continue
-			}
-			for _, appChild := range appChildren {
-				childResources, err := qs.GetNestedChildResources(appChild)
-				if err != nil {
-					appLogger.WithError(err).Error("Error getting nested child resources")
-					continue
+			} else {
+				for _, appChild := range appChildren {
+					childResources, err := qs.GetNestedChildResources(appChild)
+					if err != nil {
+						appLogger.WithError(err).Error("Error getting nested child resources")
+						continue
+					}
+					for childResource := range childResources {
+						allAppChildren = append(allAppChildren, &childResource)
+					}
+					appLogger.Debugf("Children of Argo CD application %q: %v", argoApp.Name, childResources)
 				}
-				for childResource := range childResources {
-					allAppChildren = append(allAppChildren, &childResource)
-				}
-				appLogger.Debugf("Children of Argo CD application %q: %v", argoApp.Name, childResources)
 			}
+			// Always try to augment with resources inferred from Application.status,
+			// even if graph traversal failed.
 			resources, err := argoCDClient.GetResourcesFromApplicationStatus(ctx, &argoApp)
 			if err != nil {
 				appLogger.WithError(err).Error("Error getting resources from application status")
