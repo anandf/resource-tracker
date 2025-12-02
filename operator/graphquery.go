@@ -81,7 +81,7 @@ func (g *GraphQueryController) execute() error {
 		log.Info("skipping query executor due to last run not lapsed the check interval")
 		return nil
 	}
-	var allAppChildren []common.ResourceInfo
+	var allAppChildren []*common.ResourceInfo
 	g.lastRunTime = time.Now()
 	for host, qs := range g.queryServers {
 		log.Infof("Querying Argo CD application globally for application in host %s", host)
@@ -92,7 +92,7 @@ func (g *GraphQueryController) execute() error {
 		}
 		log.Infof("Children of Argo CD application globally for application: %v", appChildren)
 		for appChild := range appChildren {
-			allAppChildren = append(allAppChildren, appChild)
+			allAppChildren = append(allAppChildren, &appChild)
 		}
 	}
 

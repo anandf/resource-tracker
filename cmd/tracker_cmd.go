@@ -127,7 +127,7 @@ func NewAnalyzeCommand() *cobra.Command {
 	cmd.Flags().StringVarP(&cfg.argocdNamespace, "namespace", "n", "argocd", "ArgoCD namespace")
 	cmd.Flags().StringVar(&cfg.kubeConfig, "kubeconfig", "", "Path to kubeconfig file for cluster access")
 	cmd.Flags().BoolVar(&cfg.allApps, "all-apps", false, "Analyze all applications in the namespace")
-	cmd.Flags().StringVar(&cfg.strategy, "strategy", "dynamic", "Analysis strategy: 'dynamic' (OwnerRef walking) or 'graph' (Cyphernetes)")
+	cmd.Flags().StringVar(&cfg.strategy, "strategy", "graph", "Analysis strategy: 'dynamic' (OwnerRef walking) or 'graph' (Cyphernetes)")
 	return cmd
 }
 

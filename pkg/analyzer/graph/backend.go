@@ -3,19 +3,28 @@ package graphbackend
 import (
 	"context"
 	"fmt"
+	"sync"
 
 	"github.com/anandf/resource-tracker/pkg/analyzer"
 	"github.com/anandf/resource-tracker/pkg/argocd"
 	"github.com/anandf/resource-tracker/pkg/common"
 	"github.com/anandf/resource-tracker/pkg/graph"
+	"github.com/anandf/resource-tracker/pkg/kube"
+	"github.com/argoproj/argo-cd/v3/pkg/apis/application/v1alpha1"
 	log "github.com/sirupsen/logrus"
 )
 
-// Backend implements the analysis using the Cyphernetes graph query engine.
-type Backend struct{}
+// It caches one QueryServer per destination cluster.
+type Backend struct {
+	mu           sync.Mutex
+	queryServers map[string]*graph.QueryServer
+}
 
 func NewBackend() *Backend {
-	return &Backend{}
+	return &Backend{
+		mu:           sync.Mutex{},
+		queryServers: make(map[string]*graph.QueryServer),
+	}
 }
 
 // Execute performs a graph-based analysis and returns grouped resource kinds.
@@ -49,12 +58,7 @@ func (b *Backend) Execute(ctx context.Context, opts analyzer.Options) (*common.G
 		return nil, err
 	}
 
-	qs, err := graph.NewQueryServer(opts.KubeConfig, trackingMethod, true)
-	if err != nil {
-		return nil, err
-	}
-
-	var allAppChildren []common.ResourceInfo
+	var allAppChildren []*common.ResourceInfo
 	if opts.TargetApp != "" {
 		if opts.TargetApp == "" {
 			return nil, fmt.Errorf("global graph query requires TargetApp to be set")
@@ -62,6 +66,10 @@ func (b *Backend) Execute(ctx context.Context, opts analyzer.Options) (*common.G
 		appLogger := logger.WithField("applicationName", opts.TargetApp)
 		appLogger.Infof("Processing application")
 		argoApp, err := argoCDClient.GetApplication(opts.TargetApp)
+		if err != nil {
+			return nil, err
+		}
+		qs, err := b.getQueryServerForApp(ctx, argoCDClient, argoApp, opts.KubeConfigPath, trackingMethod, logger)
 		if err != nil {
 			return nil, err
 		}
@@ -78,9 +86,15 @@ func (b *Backend) Execute(ctx context.Context, opts analyzer.Options) (*common.G
 				return nil, err
 			}
 			for childResource := range childResources {
-				allAppChildren = append(allAppChildren, childResource)
+				allAppChildren = append(allAppChildren, &childResource)
 			}
 		}
+		resources, err := argoCDClient.GetResourcesFromApplicationStatus(ctx, argoApp)
+		if err != nil {
+			appLogger.WithError(err).Error("Error getting resources from application status")
+			return nil, err
+		}
+		allAppChildren = append(allAppChildren, resources...)
 	} else {
 		argoApps, err := argoCDClient.ListApplications()
 		if err != nil {
@@ -96,6 +110,11 @@ func (b *Backend) Execute(ctx context.Context, opts analyzer.Options) (*common.G
 				appLogger.WithError(err).Error("Error getting application children")
 				continue
 			}
+			qs, err := b.getQueryServerForApp(ctx, argoCDClient, &argoApp, opts.KubeConfigPath, trackingMethod, logger)
+			if err != nil {
+				appLogger.WithError(err).Error("Error getting query server for application")
+				continue
+			}
 			for _, appChild := range appChildren {
 				childResources, err := qs.GetNestedChildResources(appChild)
 				if err != nil {
@@ -103,20 +122,75 @@ func (b *Backend) Execute(ctx context.Context, opts analyzer.Options) (*common.G
 					continue
 				}
 				for childResource := range childResources {
-					allAppChildren = append(allAppChildren, childResource)
+					allAppChildren = append(allAppChildren, &childResource)
 				}
 				appLogger.Debugf("Children of Argo CD application %q: %v", argoApp.Name, childResources)
 			}
+			resources, err := argoCDClient.GetResourcesFromApplicationStatus(ctx, &argoApp)
+			if err != nil {
+				appLogger.WithError(err).Error("Error getting resources from application status")
+				continue
+			}
+			allAppChildren = append(allAppChildren, resources...)
 		}
 	}
 	groupedKinds := make(common.GroupedResourceKinds)
 	groupedKinds.MergeResourceInfos(allAppChildren)
-	// Merge missing resources reported via Application conditions.
-	missingResources, err := argoCDClient.GetAllMissingResources()
-	if err != nil {
-		return nil, err
-	}
-	logger.Debugf("Found %d missing resources from app conditions", len(missingResources))
-	groupedKinds.MergeResourceInfos(missingResources)
 	return &groupedKinds, nil
+}
+
+// getQueryServerForApp resolves the destination cluster for the given Argo CD
+// Application and returns a cached QueryServer for that cluster, creating it
+// if necessary.
+func (b *Backend) getQueryServerForApp(
+	ctx context.Context,
+	argoCDClient argocd.ArgoCD,
+	app *v1alpha1.Application,
+	kubeConfigPath string,
+	trackingMethod string,
+	logger *log.Entry,
+) (*graph.QueryServer, error) {
+	// Determine the destination server for this application.
+	server := app.Spec.Destination.Server
+	if server == "" {
+		if app.Spec.Destination.Name == "" {
+			return nil, fmt.Errorf("both destination server and name are empty for application %q", app.Name)
+		}
+		var err error
+		server, err = argoCDClient.GetApplicationClusterServerByName(ctx, app.Spec.Destination.Name)
+		if err != nil {
+			return nil, fmt.Errorf("error getting application cluster server by name %q: %w", app.Spec.Destination.Name, err)
+		}
+	}
+
+	// Check cache first.
+	b.mu.Lock()
+	if qs, ok := b.queryServers[server]; ok {
+		b.mu.Unlock()
+		return qs, nil
+	}
+	b.mu.Unlock()
+
+	// Fetch the Argo CD Cluster object and build a rest.Config for the
+	// destination cluster.
+	cluster, err := argoCDClient.GetAppCluster(ctx, server)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get destination cluster %q: %w", server, err)
+	}
+	restCfg, err := kube.RestConfigFromCluster(cluster, kubeConfigPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to build rest.Config for cluster %q: %w", server, err)
+	}
+
+	qs, err := graph.NewQueryServer(restCfg, trackingMethod, true)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create query server for cluster %q: %w", server, err)
+	}
+
+	b.mu.Lock()
+	b.queryServers[server] = qs
+	b.mu.Unlock()
+
+	logger.WithField("cluster", server).Debug("Created new QueryServer for destination cluster")
+	return qs, nil
 }

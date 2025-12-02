@@ -51,8 +51,8 @@ func (b *Backend) Execute(ctx context.Context, opts analyzer.Options) (*common.G
 	}
 	// Initialize the shared DynamicTracker used to discover relations across clusters.
 	rt := dynamic.NewDynamicTracker(logger)
-
 	var apps []*v1alpha1.Application
+	groupedKinds := make(common.GroupedResourceKinds)
 	if opts.TargetApp == "" {
 		// Analyze all apps
 		logger.Info("Listing all applications...")
@@ -65,7 +65,15 @@ func (b *Backend) Execute(ctx context.Context, opts analyzer.Options) (*common.G
 		for i := range appsList {
 			app := appsList[i]
 			apps = append(apps, &app)
+			missingResources, err := ac.GetResourcesFromApplicationStatus(ctx, &app)
+			if err != nil {
+				logger.WithError(err).Error("Error getting missing resources from application conditions")
+				continue
+			}
+			logger.Debugf("Found %d missing resources from application conditions", len(missingResources))
+			groupedKinds.MergeResourceInfos(missingResources)
 		}
+
 	} else {
 		// Analyze a single app
 		logger.Infof("Getting application %q", opts.TargetApp)
@@ -74,19 +82,17 @@ func (b *Backend) Execute(ctx context.Context, opts analyzer.Options) (*common.G
 			return nil, err
 		}
 		apps = []*v1alpha1.Application{app}
+		missingResources, err := ac.GetResourcesFromApplicationStatus(ctx, app)
+		if err != nil {
+			return nil, err
+		}
+		logger.Debugf("Found %d missing resources from application conditions", len(missingResources))
+		groupedKinds.MergeResourceInfos(missingResources)
 	}
 
 	// Use the v2 implementation based on errgroup for concurrency and cancellation.
 	appChildren := analyzeWithDynamicTracker(opts.KubeConfigPath, ctx, apps, ac, rt, logger)
-	groupedKinds := make(common.GroupedResourceKinds)
 	groupedKinds.MergeResourceInfos(appChildren)
-	// Merge missing resources reported via Application conditions.
-	missingResources, err := ac.GetAllMissingResources()
-	if err != nil {
-		return nil, err
-	}
-	logger.Debugf("Found %d missing resources from applications conditions", len(missingResources))
-	groupedKinds.MergeResourceInfos(missingResources)
 	return &groupedKinds, nil
 }
 
@@ -99,10 +105,10 @@ func analyzeWithDynamicTracker(
 	ac argocd.ArgoCD, // Passed in dependency
 	rt *dynamic.DynamicTracker, // Passed in dependency
 	logger *log.Entry,
-) []common.ResourceInfo {
+) []*common.ResourceInfo {
 	var (
 		mu          sync.Mutex
-		appChildren []common.ResourceInfo
+		appChildren []*common.ResourceInfo
 	)
 
 	// errgroup handles concurrency, error propagation, and context cancellation.

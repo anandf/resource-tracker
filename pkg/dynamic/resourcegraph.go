@@ -330,7 +330,7 @@ func (r *ResourceMapper) GetClusterResourcesRelation(ctx context.Context) (map[s
 func GetResourceRelation(
 	resourceRelation map[string]*hashset.Set,
 	directChildren []*common.ResourceInfo,
-) []common.ResourceInfo {
+) []*common.ResourceInfo {
 	visitedKeys := make(map[string]struct{})
 	for _, direct := range directChildren {
 		group := direct.Group
@@ -341,7 +341,7 @@ func GetResourceRelation(
 		dfs(resourceRelation, rootKey, visitedKeys)
 	}
 	// Convert visitedKeys -> []common.ResourceInfo
-	out := make([]common.ResourceInfo, 0, len(visitedKeys))
+	out := make([]*common.ResourceInfo, 0, len(visitedKeys))
 	for key := range visitedKeys {
 		parts := strings.SplitN(key, "_", 2)
 		if len(parts) != 2 {
@@ -352,7 +352,7 @@ func GetResourceRelation(
 		if groupSeg == "core" {
 			group = ""
 		}
-		out = append(out, common.ResourceInfo{
+		out = append(out, &common.ResourceInfo{
 			Group: group,
 			Kind:  kind,
 			// Name/Namespace can stay empty; grouping ignores them

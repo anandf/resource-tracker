@@ -129,7 +129,7 @@ func (g *GroupedResourceKinds) FromYaml(resourceInclusionsYaml string) error {
 }
 
 // MergeResourceInfos groups given set of ResourceInfo objects according to their api groups and merges it into this GroupResourceKinds object
-func (g *GroupedResourceKinds) MergeResourceInfos(input []ResourceInfo) {
+func (g *GroupedResourceKinds) MergeResourceInfos(input []*ResourceInfo) {
 	for _, resourceInfo := range input {
 		apiGroup := resourceInfo.Group
 		if apiGroup == "" {

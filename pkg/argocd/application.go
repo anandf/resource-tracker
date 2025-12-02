@@ -35,7 +35,8 @@ type ArgoCD interface {
 	GetApplication(name string) (*v1alpha1.Application, error)
 	GetAppProject(app *v1alpha1.Application) (*v1alpha1.AppProject, error)
 	GetApplicationClusterServerByName(ctx context.Context, clusterName string) (string, error)
-	GetAllMissingResources() ([]common.ResourceInfo, error)
+	GetResourcesFromApplicationStatus(ctx context.Context, application *v1alpha1.Application) ([]*common.ResourceInfo, error)
+	GetAllMissingResources() ([]*common.ResourceInfo, error)
 	GetApplicationChildManifests(ctx context.Context, application *v1alpha1.Application, kubeconfig string, server string) ([]*common.ResourceInfo, error)
 	GetTrackingMethod() (string, error)
 	GetAppCluster(ctx context.Context, server string) (*v1alpha1.Cluster, error)
@@ -124,8 +125,8 @@ func (a *argocd) GetAppProject(app *v1alpha1.Application) (*v1alpha1.AppProject,
 }
 
 // GetAllMissingResources returns the missing resources across all applications
-func (a *argocd) GetAllMissingResources() ([]common.ResourceInfo, error) { // <-- TYPE UPDATED
-	allMissingResources := make([]common.ResourceInfo, 0) // <-- TYPE UPDATED
+func (a *argocd) GetAllMissingResources() ([]*common.ResourceInfo, error) {
+	allMissingResources := make([]*common.ResourceInfo, 0)
 	appList, err := a.ListApplications()
 	if err != nil {
 		return nil, err
@@ -192,29 +193,8 @@ func (a *argocd) GetCurrentResourceInclusions(gvr *schema.GroupVersionResource, 
 	return resourceInclusionsYaml, nil
 }
 
-// lookupQueryServer looks up query server for a given kubeconfig
-func (a *argocd) lookupQueryServer(kubeConfig *rest.Config) (*graph.QueryServer, error) {
-	if kubeConfig == nil {
-		return nil, fmt.Errorf("invalid kubeConfig is nil")
-	}
-	if qs, ok := a.queryServers[kubeConfig.Host]; !ok {
-		trackingMethod, err := a.GetTrackingMethod()
-		if err != nil {
-			return nil, err
-		}
-		newQueryServer, err := graph.NewQueryServer(kubeConfig, trackingMethod, false)
-		if err != nil {
-			return nil, fmt.Errorf("could not create query server: %w", err)
-		}
-		a.queryServers[kubeConfig.Host] = newQueryServer
-		return newQueryServer, nil
-	} else {
-		return qs, nil
-	}
-}
-
 // getMissingResources returns the resources that are missing to be managed via an Argo Application
-func getMissingResources(obj *v1alpha1.Application) ([]common.ResourceInfo, error) { // <-- TYPE UPDATED
+func getMissingResources(obj *v1alpha1.Application) ([]*common.ResourceInfo, error) {
 	conditions, err := getExcludedResourceConditions(obj.Status.Conditions)
 	if err != nil {
 		return nil, err
@@ -249,9 +229,9 @@ func getExcludedResourceConditions(statusConditions []v1alpha1.ApplicationCondit
 
 // getResourcesFromConditions returns the resources that are missing to be managed reported in status.conditions
 // of an Argo CD Application
-func getResourcesFromConditions(conditions []metav1.Condition) ([]common.ResourceInfo, error) { // <-- TYPE UPDATED
+func getResourcesFromConditions(conditions []metav1.Condition) ([]*common.ResourceInfo, error) {
 	regex := regexp.MustCompile(ExcludedResourceWarningMsgPattern)
-	results := make([]common.ResourceInfo, 0, len(conditions)) // <-- TYPE UPDATED
+	results := make([]*common.ResourceInfo, 0, len(conditions))
 	for _, condition := range conditions {
 		if condition.Type == ConditionTypeExcludedResourceWarning {
 			matches := regex.FindStringSubmatch(condition.Message)
@@ -262,13 +242,40 @@ func getResourcesFromConditions(conditions []metav1.Condition) ([]common.Resourc
 				if group == "" {
 					group = "core"
 				}
-				results = append(results, common.ResourceInfo{ // <-- TYPE UPDATED
+				results = append(results, &common.ResourceInfo{
 					Group: group,
 					Kind:  kind,
 					Name:  resourceName,
 				})
 			}
 		}
+	}
+	return results, nil
+}
+
+func (a *argocd) GetResourcesFromApplicationStatus(ctx context.Context, application *v1alpha1.Application) ([]*common.ResourceInfo, error) {
+	missingResources, err := getMissingResources(application)
+	if err != nil {
+		return nil, fmt.Errorf("error getting missing resources: %w", err)
+	}
+	results := make([]*common.ResourceInfo, 0, len(application.Status.Resources)+len(missingResources))
+	for _, mr := range missingResources {
+		// Convert value type to pointer type expected by the result slice.
+		mrCopy := mr
+		results = append(results, &common.ResourceInfo{
+			Group:     mrCopy.Group,
+			Kind:      mrCopy.Kind,
+			Name:      mrCopy.Name,
+			Namespace: mrCopy.Namespace,
+		})
+	}
+	for _, resource := range application.Status.Resources {
+		results = append(results, &common.ResourceInfo{
+			Group:     resource.Group,
+			Kind:      resource.Kind,
+			Name:      resource.Name,
+			Namespace: resource.Namespace,
+		})
 	}
 	return results, nil
 }
