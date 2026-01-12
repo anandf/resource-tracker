@@ -119,7 +119,7 @@ func NewAnalyzeCommand() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&cfg.logLevel, "loglevel", env.GetStringVal("RESOURCE_TRACKER_LOGLEVEL", "info"), "set the loglevel to one of trace|debug|info|warn|error")
 	cmd.Flags().StringVarP(&cfg.applicationName, "app", "", "", "Application name (required for single app analysis). Supports 'namespace/name' syntax.")
-	cmd.Flags().StringVarP(&cfg.applicationNamespace, "app-namespace", "N", "", "Application namespace")
+	cmd.Flags().StringVarP(&cfg.applicationNamespace, "app-namespace", "N", "argocd", "Application namespace")
 	cmd.Flags().StringVar(&cfg.repoServerAddress, "repo-server", env.GetStringVal("ARGOCD_REPO_SERVER", ""), "Repo server address. If empty, the CLI will port-forward to the repo-server service.")
 	cmd.Flags().BoolVar(&cfg.repoServerPlaintext, "repo-server-plaintext", false, "Use an unencrypted HTTP connection to the ArgoCD API instead of TLS.")
 	cmd.Flags().BoolVar(&cfg.repoServerStrictTLS, "repo-server-strict-tls", false, "Enable strict TLS validation for the repo server connection.")
