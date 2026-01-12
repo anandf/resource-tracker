@@ -119,6 +119,12 @@ func analyzeWithDynamicTracker(
 		// Lets not terminate if we encounter an error while processing an application, we are logging the error and returning nil to continue the loop.
 		// returing an error will terminate the errgroup and return the error to the caller.
 		g.Go(func() error {
+			// Check for context cancellation
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			default:
+			}
 			appLogger := logger.WithFields(log.Fields{
 				"applicationName":      app.GetName(),
 				"applicationNamespace": app.GetNamespace(),
@@ -126,12 +132,12 @@ func analyzeWithDynamicTracker(
 			appLogger.Info("Processing application")
 			server := app.Spec.Destination.Server
 			if server == "" {
-				var err error
 				if app.Spec.Destination.Name == "" {
 					err := fmt.Errorf("both destination server and name are empty")
 					appLogger.WithError(err).Error("Destination missing")
 					return nil
 				}
+				var err error
 				server, err = ac.GetApplicationClusterServerByName(ctx, app.Spec.Destination.Name)
 				if err != nil {
 					logger.WithError(err).Error("Error getting cluster by name")
@@ -153,8 +159,12 @@ func analyzeWithDynamicTracker(
 				appLogger.WithError(err).Error("Error syncing resource mapper")
 				return nil
 			}
-			if len(rt.ResourceMapperStore) == 0 {
-				appLogger.Error("No destination clusters synced; ensure Applications have valid .spec.destination and Argo CD has access")
+			// Check if the mapper for this specific server was created successfully
+			rt.CacheMu.RLock()
+			mapperExists := rt.ResourceMapperStore[server] != nil
+			rt.CacheMu.RUnlock()
+			if !mapperExists {
+				appLogger.Error("Resource mapper for cluster was not created; ensure Applications have valid .spec.destination and Argo CD has access")
 				return nil
 			}
 			childManifests, err := ac.GetApplicationChildManifests(ctx, app, kubeconfigPath, server)
@@ -165,42 +175,40 @@ func analyzeWithDynamicTracker(
 			appLogger.Debugf("Children of Argo CD application %q: %v", app.GetName(), childManifests)
 			// Check if any direct resource is missing in cache
 			rt.CacheMu.RLock()
-			syncRequired := false
+			missingKeys := make([]string, 0)
 			for _, resource := range childManifests {
 				k := dynamic.GetResourceKey(resource.Group, resource.Kind)
 				if _, exists := rt.SharedRelationsCache[k]; !exists {
-					syncRequired = true
-					break
+					missingKeys = append(missingKeys, k)
 				}
 			}
 			rt.CacheMu.RUnlock()
-			if syncRequired {
+			if len(missingKeys) > 0 {
 				// Ensure only one worker per cluster performs the sync; others wait.
+				// The cluster lock prevents multiple goroutines from syncing the same cluster concurrently.
 				clusterLock := rt.GetClusterSyncLock(server)
 				clusterLock.Lock()
-				// Re-check under the cluster lock in case another worker already synced.
+				// Re-check under the cluster lock: another goroutine might have already synced
+				// the cache while we were waiting for the lock, making our sync unnecessary.
 				rt.CacheMu.RLock()
-				stillMissing := false
-				missingResource := ""
-				for _, resource := range childManifests {
-					k := dynamic.GetResourceKey(resource.Group, resource.Kind)
+				stillMissingKeys := make([]string, 0)
+				for _, k := range missingKeys {
 					if _, exists := rt.SharedRelationsCache[k]; !exists {
-						stillMissing = true
-						missingResource = resource.String()
-						break
+						stillMissingKeys = append(stillMissingKeys, k)
 					}
 				}
 				rt.CacheMu.RUnlock()
-				if stillMissing {
+				if len(stillMissingKeys) > 0 {
 					appLogger.WithFields(log.Fields{
-						"cluster":         server,
-						"missingResource": missingResource,
-					}).Info("Syncing cache for missing resource")
+						"cluster":          server,
+						"missingResources": stillMissingKeys,
+						"count":            len(stillMissingKeys),
+					}).Info("Syncing cache for missing resources")
 					rt.EnsureSyncedSharedCacheOnHost(ctx, server)
-					// if the direct resources are not in the cache, add them to the cache as left nodes
+					// Add direct resources as leaf nodes (empty children set) if they're still not in cache
+					// This ensures they're tracked even if they have no children or weren't discovered during sync
 					rt.CacheMu.Lock()
-					for _, resource := range childManifests {
-						k := dynamic.GetResourceKey(resource.Group, resource.Kind)
+					for _, k := range stillMissingKeys {
 						if _, exists := rt.SharedRelationsCache[k]; !exists {
 							rt.SharedRelationsCache[k] = hashset.New()
 						}
@@ -209,7 +217,10 @@ func analyzeWithDynamicTracker(
 				}
 				clusterLock.Unlock()
 			}
+			// Read cache with lock to ensure consistency during DFS traversal
+			rt.CacheMu.RLock()
 			relations := dynamic.GetResourceRelation(rt.SharedRelationsCache, childManifests)
+			rt.CacheMu.RUnlock()
 			mu.Lock()
 			appChildren = append(appChildren, relations...)
 			mu.Unlock()
