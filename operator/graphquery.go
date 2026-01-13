@@ -5,8 +5,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/anandf/resource-tracker/pkg/common"
 	"github.com/anandf/resource-tracker/pkg/env"
-	"github.com/anandf/resource-tracker/pkg/graph"
 	"github.com/anandf/resource-tracker/pkg/version"
 	"github.com/avitaltamir/cyphernetes/pkg/core"
 	log "github.com/sirupsen/logrus"
@@ -81,22 +81,22 @@ func (g *GraphQueryController) execute() error {
 		log.Info("skipping query executor due to last run not lapsed the check interval")
 		return nil
 	}
-	var allAppChildren []graph.ResourceInfo
+	var allAppChildren []*common.ResourceInfo
 	g.lastRunTime = time.Now()
 	for host, qs := range g.queryServers {
 		log.Infof("Querying Argo CD application globally for application in host %s", host)
-		qs.VisitedKinds = make(map[graph.ResourceInfo]bool)
+		qs.VisitedKinds = make(map[common.ResourceInfo]bool)
 		appChildren, err := qs.GetApplicationChildResources("", "")
 		if err != nil {
 			return err
 		}
 		log.Infof("Children of Argo CD application globally for application: %v", appChildren)
 		for appChild := range appChildren {
-			allAppChildren = append(allAppChildren, appChild)
+			allAppChildren = append(allAppChildren, &appChild)
 		}
 	}
 
-	groupedKinds := make(graph.GroupedResourceKinds)
+	groupedKinds := make(common.GroupedResourceKinds)
 	groupedKinds.MergeResourceInfos(allAppChildren)
 	missingResources, err := g.argoCDClient.GetAllMissingResources()
 	if err != nil {
@@ -105,10 +105,10 @@ func (g *GraphQueryController) execute() error {
 	// Check if additional resources are missing, if so add it.
 	for _, resource := range missingResources {
 		log.Infof("adding missing resource '%v'", resource)
-		if kindMap, ok := groupedKinds[resource.APIVersion]; !ok && kindMap == nil {
-			groupedKinds[resource.APIVersion] = graph.Kinds{resource.Kind: graph.Void{}}
+		if kindMap, ok := groupedKinds[resource.Group]; !ok && kindMap == nil {
+			groupedKinds[resource.Group] = common.Kinds{resource.Kind: common.Void{}}
 		} else {
-			groupedKinds[resource.APIVersion][resource.Kind] = graph.Void{}
+			groupedKinds[resource.Group][resource.Kind] = common.Void{}
 		}
 	}
 	if !*g.cfg.updateEnabled {

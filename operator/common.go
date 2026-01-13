@@ -11,8 +11,10 @@ import (
 	"time"
 
 	"github.com/anandf/resource-tracker/pkg/argocd"
+	"github.com/anandf/resource-tracker/pkg/common"
 	"github.com/anandf/resource-tracker/pkg/graph"
 	"github.com/anandf/resource-tracker/pkg/kube"
+	argocdcommon "github.com/argoproj/argo-cd/v3/common"
 	log "github.com/sirupsen/logrus"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -45,7 +47,7 @@ type BaseControllerConfig struct {
 type BaseController struct {
 	dynamicClient        dynamic.Interface
 	restConfig           *rest.Config
-	previousGroupedKinds graph.GroupedResourceKinds
+	previousGroupedKinds common.GroupedResourceKinds
 	queryServers         map[string]*graph.QueryServer
 	argoCDClient         argocd.ArgoCD
 	lastRunTime          time.Time
@@ -70,7 +72,15 @@ func newBaseController(cfg *BaseControllerConfig) (*BaseController, error) {
 		return nil, err
 	}
 	clusterConfigs = append(clusterConfigs, restConfig)
-	argoClient, err := argocd.NewArgoCD(restConfig, cfg.argocdNamespace)
+	argoClient, err := argocd.NewArgoCD(
+		restConfig,
+		cfg.argocdNamespace,
+		"",
+		argocdcommon.DefaultRepoServerAddr,
+		10,
+		false,
+		false,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -201,12 +211,12 @@ func listClusterConfigs(dynamicClient dynamic.Interface, argocdNS string) ([]*re
 }
 
 // handleUpdateInArgoCDCR handles the update of resource.inclusions settings in ArgoCD CustomResource
-func handleUpdateInArgoCDCR(argoCDClient argocd.ArgoCD, resourceName, resourceNamespace string, groupedKinds graph.GroupedResourceKinds) error {
+func handleUpdateInArgoCDCR(argoCDClient argocd.ArgoCD, resourceName, resourceNamespace string, groupedKinds common.GroupedResourceKinds) error {
 	currentResourceInclusions, err := argoCDClient.GetCurrentResourceInclusions(&graph.ArgoCDGVR, resourceName, resourceNamespace)
 	if err != nil {
 		return err
 	}
-	existingGroupKinds := make(graph.GroupedResourceKinds)
+	existingGroupKinds := make(common.GroupedResourceKinds)
 	err = existingGroupKinds.FromYaml(currentResourceInclusions)
 	if err != nil {
 		return err
@@ -224,12 +234,12 @@ func handleUpdateInArgoCDCR(argoCDClient argocd.ArgoCD, resourceName, resourceNa
 }
 
 // handleUpdateInCM handles the update of resource.inclusions settings in argocd-cm ConfigMap
-func handleUpdateInCM(argoCDClient argocd.ArgoCD, resourceNamespace string, groupedKinds graph.GroupedResourceKinds) error {
+func handleUpdateInCM(argoCDClient argocd.ArgoCD, resourceNamespace string, groupedKinds common.GroupedResourceKinds) error {
 	currentResourceInclusions, err := argoCDClient.GetCurrentResourceInclusions(&graph.ConfigMapGVR, "argocd-cm", resourceNamespace)
 	if err != nil {
 		return err
 	}
-	existingGroupKinds := make(graph.GroupedResourceKinds)
+	existingGroupKinds := make(common.GroupedResourceKinds)
 	err = existingGroupKinds.FromYaml(currentResourceInclusions)
 	if err != nil {
 		return err

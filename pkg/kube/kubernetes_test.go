@@ -11,14 +11,18 @@ import (
 
 func Test_NewKubernetesClientFromConfig(t *testing.T) {
 	t.Run("Get new K8s client for remote cluster instance", func(t *testing.T) {
-		client, err := NewKubernetesClientFromConfig(context.TODO(), "", "../../test/testdata/kubernetes/config")
+		config, err := GetKubeConfig("../../test/testdata/kubernetes/config")
+		require.NoError(t, err)
+		client, err := NewKubernetesClientFromConfig(context.TODO(), "", config)
 		require.NoError(t, err)
 		assert.NotNil(t, client)
 		assert.Equal(t, "default", client.KubeClient.Namespace)
 	})
 
 	t.Run("Get new K8s client for remote cluster instance specified namespace", func(t *testing.T) {
-		client, err := NewKubernetesClientFromConfig(context.TODO(), "argocd", "../../test/testdata/kubernetes/config")
+		config, err := GetKubeConfig("../../test/testdata/kubernetes/config")
+		require.NoError(t, err)
+		client, err := NewKubernetesClientFromConfig(context.TODO(), "argocd", config)
 		require.NoError(t, err)
 		assert.NotNil(t, client)
 		assert.Equal(t, "argocd", client.KubeClient.Namespace)

@@ -10,10 +10,10 @@ import (
 func newRootCommand() error {
 	var rootCmd = &cobra.Command{
 		Use:   "argocd-resource-tracker",
-		Short: "Dynamically update resource.inclusions based on the resources managed by Argo Applications",
+		Short: "Argo CD Resource Tracker",
+		Long:  "Argo CD Resource Tracker is a tool which analyzes the resource inclusions settings based on the resources managed by Argo Applications",
 	}
-	rootCmd.AddCommand(newRepoServerCommand())
-	rootCmd.AddCommand(newGraphQueryCommand())
+	rootCmd.AddCommand(NewAnalyzeCommand())
 	rootCmd.AddCommand(newVersionCommand())
 	err := rootCmd.Execute()
 	return err

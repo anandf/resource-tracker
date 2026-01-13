@@ -1,20 +1,20 @@
-package graph
+package common
 
 import (
 	"fmt"
 	"reflect"
 	"strings"
 
-	"gopkg.in/yaml.v3"
+	"gopkg.in/yaml.v2"
 )
 
 type Void struct{}
 type ResourceInfoSet map[ResourceInfo]Void
 type ResourceInfo struct {
-	Kind       string
-	APIVersion string
-	Name       string
-	Namespace  string
+	Kind      string
+	Group     string
+	Name      string
+	Namespace string
 }
 
 type Kinds map[string]Void
@@ -27,7 +27,7 @@ type ResourceInclusionEntry struct {
 }
 
 func (r *ResourceInfo) String() string {
-	return fmt.Sprintf("[apiVersion:%s, kind: %s, name: %s, namespace:%s]", r.APIVersion, r.Kind, r.Name, r.Namespace)
+	return fmt.Sprintf("[group:%s, kind: %s, name: %s, namespace:%s]", r.Group, r.Kind, r.Name, r.Namespace)
 }
 
 func (k *Kinds) Equal(other *Kinds) bool {
@@ -55,11 +55,18 @@ func (r *ResourceInclusionEntry) Equal(other *ResourceInclusionEntry) bool {
 	return true
 }
 
+// String is the single, centralized function to print the YAML output.
 func (g *GroupedResourceKinds) String() string {
 	includedResources := make([]ResourceInclusionEntry, 0, len(*g))
 	for group, kinds := range *g {
+		// Handle core group
+		apiGroup := group
+		if group == "core" || group == "" {
+			apiGroup = ""
+		}
+
 		includedResources = append(includedResources, ResourceInclusionEntry{
-			APIGroups: []string{group},
+			APIGroups: []string{apiGroup},
 			Kinds:     getUniqueKinds(kinds),
 			Clusters:  []string{"*"},
 		})
@@ -104,11 +111,15 @@ func (g *GroupedResourceKinds) FromYaml(resourceInclusionsYaml string) error {
 	}
 	for _, resourceInclusion := range existingResourceInclusionsInCM {
 		for _, apiGroup := range resourceInclusion.APIGroups {
+			group := apiGroup
+			if group == "" {
+				group = "core"
+			}
 			for _, kind := range resourceInclusion.Kinds {
-				if (*g)[apiGroup] == nil {
-					(*g)[apiGroup] = make(map[string]Void)
+				if (*g)[group] == nil {
+					(*g)[group] = make(map[string]Void)
 				}
-				(*g)[apiGroup][kind] = Void{}
+				(*g)[group][kind] = Void{}
 			}
 			// break after the first item in apiGroup list
 			break
@@ -118,12 +129,13 @@ func (g *GroupedResourceKinds) FromYaml(resourceInclusionsYaml string) error {
 }
 
 // MergeResourceInfos groups given set of ResourceInfo objects according to their api groups and merges it into this GroupResourceKinds object
-func (g *GroupedResourceKinds) MergeResourceInfos(input []ResourceInfo) {
+func (g *GroupedResourceKinds) MergeResourceInfos(input []*ResourceInfo) {
 	for _, resourceInfo := range input {
-		if len(resourceInfo.APIVersion) <= 0 {
-			continue
+		apiGroup := resourceInfo.Group
+		if apiGroup == "" {
+			apiGroup = "core"
 		}
-		apiGroup := getAPIGroup(resourceInfo.APIVersion)
+
 		if _, found := (*g)[apiGroup]; !found {
 			(*g)[apiGroup] = map[string]Void{
 				resourceInfo.Kind: {},
@@ -132,14 +144,6 @@ func (g *GroupedResourceKinds) MergeResourceInfos(input []ResourceInfo) {
 			(*g)[apiGroup][resourceInfo.Kind] = Void{}
 		}
 	}
-}
-
-// getAPIGroup returns the API group for a given API version.
-func getAPIGroup(apiVersion string) string {
-	if strings.Contains(apiVersion, "/") {
-		return strings.Split(apiVersion, "/")[0]
-	}
-	return ""
 }
 
 // getUniqueKinds given a set of kinds, it returns unique set of kinds

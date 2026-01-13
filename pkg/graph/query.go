@@ -5,6 +5,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/anandf/resource-tracker/pkg/common"
 	"github.com/avitaltamir/cyphernetes/pkg/core"
 	"github.com/avitaltamir/cyphernetes/pkg/provider"
 	"github.com/avitaltamir/cyphernetes/pkg/provider/apiserver"
@@ -70,27 +71,27 @@ var (
 		"Namespace":      true,
 	}
 
-	defaultIncludedResources = ResourceInfoSet{
-		ResourceInfo{
-			Kind:       "ConfigMap",
-			APIVersion: "v1",
-		}: Void{},
-		ResourceInfo{
-			Kind:       "Secret",
-			APIVersion: "v1",
-		}: Void{},
-		ResourceInfo{
-			Kind:       "ServiceAccount",
-			APIVersion: "v1",
-		}: Void{},
-		ResourceInfo{
-			Kind:       "Pod",
-			APIVersion: "v1",
-		}: Void{},
-		ResourceInfo{
-			Kind:       "Namespace",
-			APIVersion: "v1",
-		}: Void{},
+	defaultIncludedResources = common.ResourceInfoSet{
+		common.ResourceInfo{
+			Kind:  "ConfigMap",
+			Group: "",
+		}: common.Void{},
+		common.ResourceInfo{
+			Kind:  "Secret",
+			Group: "",
+		}: common.Void{},
+		common.ResourceInfo{
+			Kind:  "ServiceAccount",
+			Group: "",
+		}: common.Void{},
+		common.ResourceInfo{
+			Kind:  "Pod",
+			Group: "",
+		}: common.Void{},
+		common.ResourceInfo{
+			Kind:  "Namespace",
+			Group: "",
+		}: common.Void{},
 	}
 )
 
@@ -100,7 +101,7 @@ type QueryServer struct {
 	FieldAMatchCriteria string
 	Tracker             string
 	Comparison          core.ComparisonType
-	VisitedKinds        map[ResourceInfo]bool
+	VisitedKinds        map[common.ResourceInfo]bool
 }
 
 func NewQueryServer(restConfig *rest.Config, trackingMethod string, loadCustomRules bool) (*QueryServer, error) {
@@ -158,19 +159,24 @@ func NewQueryServer(restConfig *rest.Config, trackingMethod string, loadCustomRu
 		Tracker:             tracker,
 		FieldAMatchCriteria: fieldAMatchCriteria,
 		Comparison:          comparison,
-		VisitedKinds:        make(map[ResourceInfo]bool),
+		VisitedKinds:        make(map[common.ResourceInfo]bool),
 	}, nil
 
 }
 
-func (q *QueryServer) GetApplicationChildResources(name, namespace string) (ResourceInfoSet, error) {
-	return q.GetNestedChildResources(&ResourceInfo{Kind: "applications.argoproj.io", Name: name, Namespace: namespace})
+func (q *QueryServer) GetApplicationChildResources(name, namespace string) (common.ResourceInfoSet, error) {
+	return q.GetNestedChildResources(&common.ResourceInfo{
+		Kind:      "applications.argoproj.io",
+		Group:     "argoproj.io",
+		Name:      name,
+		Namespace: namespace,
+	})
 }
 
-func (q *QueryServer) GetNestedChildResources(resource *ResourceInfo) (ResourceInfoSet, error) {
-	allLevelChildren := make(ResourceInfoSet)
+func (q *QueryServer) GetNestedChildResources(resource *common.ResourceInfo) (common.ResourceInfoSet, error) {
+	allLevelChildren := make(common.ResourceInfoSet)
 	for resInfo := range defaultIncludedResources {
-		allLevelChildren[resInfo] = Void{}
+		allLevelChildren[resInfo] = common.Void{}
 		q.VisitedKinds[resInfo] = true
 	}
 	allLevelChildren, err := q.depthFirstTraversal(resource, allLevelChildren)
@@ -181,18 +187,18 @@ func (q *QueryServer) GetNestedChildResources(resource *ResourceInfo) (ResourceI
 }
 
 // getChildren returns the immediate direct child of a given node by doing a graph query.
-func (q *QueryServer) getChildren(parentResourceInfo *ResourceInfo) ([]*ResourceInfo, error) {
+func (q *QueryServer) getChildren(parentResourceInfo *common.ResourceInfo) ([]*common.ResourceInfo, error) {
 	if leafKinds[parentResourceInfo.Kind] || blackListedKinds[parentResourceInfo.Kind] {
 		log.Infof("skipping leaf or blacklisted resource: %v", parentResourceInfo)
 		return nil, nil
 	}
-	visitedKindKey := ResourceInfo{Kind: parentResourceInfo.Kind, APIVersion: parentResourceInfo.APIVersion}
+	visitedKindKey := common.ResourceInfo{Kind: parentResourceInfo.Kind, Group: parentResourceInfo.Group}
 	if _, ok := q.VisitedKinds[visitedKindKey]; ok {
 		log.Infof("skipping resource %v as kind already visited", parentResourceInfo)
 		return nil, nil
 	}
 	unambiguousKind := parentResourceInfo.Kind
-	if parentResourceInfo.APIVersion == "v1" {
+	if parentResourceInfo.Group == "" {
 		unambiguousKind = fmt.Sprintf("%s.%s", "core", parentResourceInfo.Kind)
 	}
 	// Get the query string
@@ -229,7 +235,7 @@ func (q *QueryServer) executeQuery(queryStr, namespace string) (*core.QueryResul
 }
 
 // depthFirstTraversal recursively traverses the resource tree using a DFS approach.
-func (q *QueryServer) depthFirstTraversal(info *ResourceInfo, visitedNodes ResourceInfoSet) (ResourceInfoSet, error) {
+func (q *QueryServer) depthFirstTraversal(info *common.ResourceInfo, visitedNodes common.ResourceInfoSet) (common.ResourceInfoSet, error) {
 	if info == nil {
 		return visitedNodes, nil
 	}
@@ -238,7 +244,7 @@ func (q *QueryServer) depthFirstTraversal(info *ResourceInfo, visitedNodes Resou
 		log.Debugf("Resource visited already: %v", info)
 		return visitedNodes, nil
 	}
-	visitedNodes[*info] = Void{}
+	visitedNodes[*info] = common.Void{}
 	// 2. Get children of the current node
 	children, err := q.getChildren(info)
 	if err != nil {
@@ -273,12 +279,12 @@ func (q *QueryServer) AddRuleForResourceKind(resourceKind string) {
 }
 
 // extractResourceInfo extracts the ResourceInfo from a given query result and variable name.
-func extractResourceInfo(queryResult *core.QueryResult, variable string) ([]*ResourceInfo, error) {
+func extractResourceInfo(queryResult *core.QueryResult, variable string) ([]*common.ResourceInfo, error) {
 	child := queryResult.Data[variable]
 	if child == nil {
 		return nil, nil
 	}
-	resourceInfoList := make([]*ResourceInfo, 0, len(child.([]interface{})))
+	resourceInfoList := make([]*common.ResourceInfo, 0, len(child.([]interface{})))
 	for _, meta := range child.([]interface{}) {
 		info, ok := meta.(map[string]interface{})
 		if !ok {
@@ -289,10 +295,18 @@ func extractResourceInfo(queryResult *core.QueryResult, variable string) ([]*Res
 			log.Infof("ignoring resource of kind: %v", info["kind"])
 			continue
 		}
-		resourceInfo := ResourceInfo{
-			Kind:       info["kind"].(string),
-			APIVersion: info["apiVersion"].(string),
-			Name:       info["name"].(string),
+		apiVersion, _ := info["apiVersion"].(string)
+		group := ""
+		if apiVersion != "" {
+			parts := strings.Split(apiVersion, "/")
+			if len(parts) == 2 {
+				group = parts[0]
+			}
+		}
+		resourceInfo := common.ResourceInfo{
+			Kind:  info["kind"].(string),
+			Group: group,
+			Name:  info["name"].(string),
 		}
 		metadata, ok := info["metadata"].(map[string]interface{})
 		if !ok {
