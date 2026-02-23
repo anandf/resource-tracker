@@ -2,18 +2,19 @@ package dynamicbackend
 
 import (
 	"context"
-	"fmt"
+	"errors"
 	"sync"
+
+	"github.com/argoproj/argo-cd/v3/pkg/apis/application/v1alpha1"
+	"github.com/emirpasic/gods/sets/hashset"
+	log "github.com/sirupsen/logrus"
+	"golang.org/x/sync/errgroup"
 
 	"github.com/anandf/resource-tracker/pkg/analyzer"
 	"github.com/anandf/resource-tracker/pkg/argocd"
 	"github.com/anandf/resource-tracker/pkg/common"
 	"github.com/anandf/resource-tracker/pkg/dynamic"
 	"github.com/anandf/resource-tracker/pkg/kube"
-	"github.com/argoproj/argo-cd/v3/pkg/apis/application/v1alpha1"
-	"github.com/emirpasic/gods/sets/hashset"
-	log "github.com/sirupsen/logrus"
-	"golang.org/x/sync/errgroup"
 )
 
 // Backend implements the analysis using OwnerRefs and the dynamic resource graph logic.
@@ -33,7 +34,7 @@ func (b *Backend) Execute(ctx context.Context, opts analyzer.Options) (*common.G
 	logger.Info("Starting dynamic analysis backend...")
 
 	if opts.KubeConfig == nil {
-		return nil, fmt.Errorf("dynamic backend: KubeConfig is nil in Options")
+		return nil, errors.New("dynamic backend: KubeConfig is nil in Options")
 	}
 
 	// Initialize ArgoCD high-level client against the control-plane cluster.
@@ -65,7 +66,7 @@ func (b *Backend) Execute(ctx context.Context, opts analyzer.Options) (*common.G
 		for i := range appsList {
 			app := appsList[i]
 			apps = append(apps, &app)
-			missingResources, err := ac.GetResourcesFromApplicationStatus(ctx, &app)
+			missingResources, err := ac.GetResourcesFromApplicationStatus(&app)
 			if err != nil {
 				logger.WithError(err).Error("Error getting missing resources from application conditions")
 				continue
@@ -73,16 +74,14 @@ func (b *Backend) Execute(ctx context.Context, opts analyzer.Options) (*common.G
 			logger.Debugf("Found %d missing resources from application conditions", len(missingResources))
 			groupedKinds.MergeResourceInfos(missingResources)
 		}
-
-	} else {
-		// Analyze a single app
+	} else { // Analyze a single app
 		logger.Infof("Getting application %q", opts.TargetApp)
 		app, err := ac.GetApplication(opts.TargetApp)
 		if err != nil {
 			return nil, err
 		}
 		apps = []*v1alpha1.Application{app}
-		missingResources, err := ac.GetResourcesFromApplicationStatus(ctx, app)
+		missingResources, err := ac.GetResourcesFromApplicationStatus(app)
 		if err != nil {
 			return nil, err
 		}
@@ -91,7 +90,7 @@ func (b *Backend) Execute(ctx context.Context, opts analyzer.Options) (*common.G
 	}
 
 	// Use the v2 implementation based on errgroup for concurrency and cancellation.
-	appChildren := analyzeWithDynamicTracker(opts.KubeConfigPath, ctx, apps, ac, rt, logger)
+	appChildren := analyzeWithDynamicTracker(ctx, opts.KubeConfigPath, apps, ac, rt, logger)
 	groupedKinds.MergeResourceInfos(appChildren)
 	return &groupedKinds, nil
 }
@@ -99,11 +98,11 @@ func (b *Backend) Execute(ctx context.Context, opts analyzer.Options) (*common.G
 // analyzeWithDynamicTracker analyzes the applications concurrently using errgroup
 // and returns the computed list of resources.
 func analyzeWithDynamicTracker(
-	kubeconfigPath string,
 	ctx context.Context,
+	kubeconfigPath string,
 	apps []*v1alpha1.Application,
-	ac argocd.ArgoCD, // Passed in dependency
-	rt *dynamic.DynamicTracker, // Passed in dependency
+	ac argocd.ArgoCD,
+	rt *dynamic.DynamicTracker,
 	logger *log.Entry,
 ) []*common.ResourceInfo {
 	var (
@@ -133,7 +132,7 @@ func analyzeWithDynamicTracker(
 			server := app.Spec.Destination.Server
 			if server == "" {
 				if app.Spec.Destination.Name == "" {
-					err := fmt.Errorf("both destination server and name are empty")
+					err := errors.New("both destination server and name are empty")
 					appLogger.WithError(err).Error("Destination missing")
 					return nil
 				}
@@ -167,7 +166,7 @@ func analyzeWithDynamicTracker(
 				appLogger.Error("Resource mapper for cluster was not created; ensure Applications have valid .spec.destination and Argo CD has access")
 				return nil
 			}
-			childManifests, err := ac.GetApplicationChildManifests(ctx, app, kubeconfigPath, server)
+			childManifests, err := ac.GetApplicationChildManifests(ctx, app)
 			if err != nil {
 				appLogger.WithError(err).Error("Error getting child manifests")
 				return nil
@@ -200,9 +199,7 @@ func analyzeWithDynamicTracker(
 				rt.CacheMu.RUnlock()
 				if len(stillMissingKeys) > 0 {
 					appLogger.WithFields(log.Fields{
-						"cluster":          server,
-						"missingResources": stillMissingKeys,
-						"count":            len(stillMissingKeys),
+						"cluster": server,
 					}).Info("Syncing cache for missing resources")
 					rt.EnsureSyncedSharedCacheOnHost(ctx, server)
 					// Add direct resources as leaf nodes (empty children set) if they're still not in cache
@@ -228,6 +225,9 @@ func analyzeWithDynamicTracker(
 		})
 	}
 	// Wait for all workers to complete.
-	g.Wait()
+	err := g.Wait()
+	if err != nil {
+		logger.WithError(err).Error("Error analyzing applications")
+	}
 	return appChildren
 }

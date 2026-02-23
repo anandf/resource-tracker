@@ -5,12 +5,13 @@ import (
 	"strings"
 	"time"
 
-	"github.com/anandf/resource-tracker/pkg/common"
-	"github.com/anandf/resource-tracker/pkg/env"
-	"github.com/anandf/resource-tracker/pkg/version"
 	"github.com/avitaltamir/cyphernetes/pkg/core"
 	log "github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
+
+	"github.com/anandf/resource-tracker/pkg/common"
+	"github.com/anandf/resource-tracker/pkg/env"
+	"github.com/anandf/resource-tracker/pkg/version"
 )
 
 type GraphQueryControllerConfig struct {
@@ -25,10 +26,10 @@ type GraphQueryController struct {
 // newGraphQueryCommand implements "runQuery" command which executes a cyphernetes graph query against a given kubeconfig
 func newGraphQueryCommand() *cobra.Command {
 	cfg := &GraphQueryControllerConfig{}
-	var runQueryCmd = &cobra.Command{
+	runQueryCmd := &cobra.Command{
 		Use:   "run-query",
 		Short: "Runs the resource-tracker which executes a graph based query to fetch the dependencies",
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(_ *cobra.Command, _ []string) error {
 			log.Infof("%s %s starting [loglevel:%s, interval:%s]",
 				fmt.Sprintf("%s-%s", version.BinaryName(), "operator"),
 				version.Version(),

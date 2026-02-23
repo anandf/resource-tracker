@@ -28,6 +28,7 @@ func Test_NewKubernetesClientFromConfig(t *testing.T) {
 		assert.Equal(t, "argocd", client.KubeClient.Namespace)
 	})
 }
+
 func Test_NewKubernetesClient(t *testing.T) {
 	t.Run("Create new Kubernetes client with valid inputs", func(t *testing.T) {
 		mockClientset := &kubernetes.Clientset{} // Mock clientset

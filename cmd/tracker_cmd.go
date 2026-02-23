@@ -2,16 +2,10 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
-	"github.com/anandf/resource-tracker/pkg/analyzer"
-	dynamicbackend "github.com/anandf/resource-tracker/pkg/analyzer/dynamic"
-	graphbackend "github.com/anandf/resource-tracker/pkg/analyzer/graph"
-	"github.com/anandf/resource-tracker/pkg/common"
-	"github.com/anandf/resource-tracker/pkg/env"
-	"github.com/anandf/resource-tracker/pkg/kube"
-	"github.com/anandf/resource-tracker/pkg/version"
 	argocdcommon "github.com/argoproj/argo-cd/v3/common"
 	kubeutil "github.com/argoproj/argo-cd/v3/util/kube"
 	"github.com/avitaltamir/cyphernetes/pkg/core"
@@ -21,6 +15,14 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
+
+	"github.com/anandf/resource-tracker/pkg/analyzer"
+	dynamicbackend "github.com/anandf/resource-tracker/pkg/analyzer/dynamic"
+	graphbackend "github.com/anandf/resource-tracker/pkg/analyzer/graph"
+	"github.com/anandf/resource-tracker/pkg/common"
+	"github.com/anandf/resource-tracker/pkg/env"
+	"github.com/anandf/resource-tracker/pkg/kube"
+	"github.com/anandf/resource-tracker/pkg/version"
 )
 
 type queryCLIConfig struct {
@@ -45,7 +47,7 @@ func NewAnalyzeCommand() *cobra.Command {
 		Use:   "analyze",
 		Short: "Analyze resource relationships and dependencies for ArgoCD applications",
 		Long:  "Analyze resource relationships and dependencies for ArgoCD applications. Can process a single app or all apps.",
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(_ *cobra.Command, _ []string) error {
 			log.Infof("%s %s starting [loglevel:%s]",
 				version.BinaryName(),
 				version.Version(),
@@ -60,7 +62,7 @@ func NewAnalyzeCommand() *cobra.Command {
 
 			// Require --app when --all-apps is false, to avoid silently analyzing all apps.
 			if !cfg.allApps && cfg.applicationName == "" {
-				return fmt.Errorf("application name is required to analyze a single application")
+				return errors.New("application name is required to analyze a single application")
 			}
 
 			// Support app specified as "namespace/name" similar to `argocd app get ns/name`.
@@ -127,7 +129,7 @@ func NewAnalyzeCommand() *cobra.Command {
 	cmd.Flags().StringVarP(&cfg.argocdNamespace, "namespace", "n", "argocd", "ArgoCD namespace")
 	cmd.Flags().StringVar(&cfg.kubeConfig, "kubeconfig", "", "Path to kubeconfig file for cluster access")
 	cmd.Flags().BoolVar(&cfg.allApps, "all-apps", false, "Analyze all applications in the namespace")
-	cmd.Flags().StringVar(&cfg.strategy, "strategy", "graph", "Analysis strategy: 'dynamic' (OwnerRef walking) or 'graph' (Cyphernetes)")
+	cmd.Flags().StringVar(&cfg.strategy, "strategy", "dynamic", "Analysis strategy: 'dynamic' (OwnerRef walking) or 'graph' (Cyphernetes)")
 	return cmd
 }
 
@@ -137,7 +139,7 @@ func printInclusions(groupedKinds *common.GroupedResourceKinds) {
 		log.Errorf("error generating resource.inclusions: %s", resourceInclusionString)
 		return
 	}
-	log.Infof("resource.inclusions: |\n%s", resourceInclusionString)
+	log.Infof("\nresource.inclusions: |\n%s", resourceInclusionString)
 }
 
 func ensureRepoServerAddress(restCfg *rest.Config, namespace, current string) (string, error) {

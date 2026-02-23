@@ -51,7 +51,6 @@ func (rt *DynamicTracker) GetClusterSyncLock(server string) *sync.Mutex {
 
 // EnsureSyncedSharedCacheOnHost ensures the shared cache is synced on the given server.
 func (rt *DynamicTracker) EnsureSyncedSharedCacheOnHost(ctx context.Context, server string) {
-
 	mapper, ok := rt.ResourceMapperStore[server]
 	if !ok || mapper == nil {
 		rt.logger.Warningf("No mapper for host %s", server)

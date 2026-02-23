@@ -3,17 +3,18 @@ package main
 import (
 	"fmt"
 
-	"github.com/anandf/resource-tracker/pkg/version"
 	"github.com/spf13/cobra"
+
+	"github.com/anandf/resource-tracker/pkg/version"
 )
 
 // newVersionCommand implements "version" command
 func newVersionCommand() *cobra.Command {
 	var short bool
-	var versionCmd = &cobra.Command{
+	versionCmd := &cobra.Command{
 		Use:   "version",
 		Short: "Display version information",
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(cmd *cobra.Command, _ []string) error {
 			out := cmd.OutOrStdout()
 			if !short {
 				fmt.Fprintf(out, "%s\n", version.Useragent())

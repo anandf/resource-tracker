@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/anandf/resource-tracker/pkg/version"
 )
@@ -44,7 +45,7 @@ func TestNewVersionCommand(t *testing.T) {
 			cmd.SetOut(buf)
 			cmd.SetArgs(tt.args)
 			err := cmd.Execute()
-			assert.NoError(t, err)
+			require.NoError(t, err)
 			assert.Equal(t, tt.expected, buf.String())
 		})
 	}

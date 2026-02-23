@@ -8,7 +8,7 @@ import (
 
 // newRootCommand implements the root command of argocd-resource-tracker
 func newRootCommand() error {
-	var rootCmd = &cobra.Command{
+	rootCmd := &cobra.Command{
 		Use:   "argocd-resource-tracker",
 		Short: "Argo CD Resource Tracker",
 		Long:  "Argo CD Resource Tracker is a tool which analyzes the resource inclusions settings based on the resources managed by Argo Applications",

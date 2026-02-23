@@ -4,16 +4,13 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
-	"github.com/anandf/resource-tracker/pkg/argocd"
-	"github.com/anandf/resource-tracker/pkg/common"
-	"github.com/anandf/resource-tracker/pkg/graph"
-	"github.com/anandf/resource-tracker/pkg/kube"
 	argocdcommon "github.com/argoproj/argo-cd/v3/common"
 	log "github.com/sirupsen/logrus"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -22,6 +19,11 @@ import (
 	"k8s.io/client-go/dynamic/dynamicinformer"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/cache"
+
+	"github.com/anandf/resource-tracker/pkg/argocd"
+	"github.com/anandf/resource-tracker/pkg/common"
+	"github.com/anandf/resource-tracker/pkg/graph"
+	"github.com/anandf/resource-tracker/pkg/kube"
 )
 
 const (
@@ -46,7 +48,6 @@ type BaseControllerConfig struct {
 
 type BaseController struct {
 	dynamicClient        dynamic.Interface
-	restConfig           *rest.Config
 	previousGroupedKinds common.GroupedResourceKinds
 	queryServers         map[string]*graph.QueryServer
 	argoCDClient         argocd.ArgoCD
@@ -55,7 +56,7 @@ type BaseController struct {
 
 func newBaseController(cfg *BaseControllerConfig) (*BaseController, error) {
 	if cfg.updateResourceKind != ConfigMapResourceKind && cfg.updateResourceName != ArgoCDResourceKind {
-		return nil, fmt.Errorf("invalid update-resource-kind, valid values are ConfigMap and ArgoCD")
+		return nil, errors.New("invalid update-resource-kind, valid values are ConfigMap and ArgoCD")
 	}
 	restConfig, err := kube.GetKubeConfig(cfg.kubeConfig)
 	if err != nil {
@@ -89,10 +90,10 @@ func newBaseController(cfg *BaseControllerConfig) (*BaseController, error) {
 		return nil, err
 	}
 	for _, clusterConfig := range clusterConfigs {
-		if len(clusterConfig.Host) == 0 {
+		if clusterConfig.Host == "" {
 			continue
 		}
-		queryServer, err := graph.NewQueryServer(clusterConfig, trackingMethod, true)
+		queryServer, err := graph.NewQueryServer(clusterConfig, trackingMethod)
 		if err != nil {
 			return nil, err
 		}
@@ -100,7 +101,6 @@ func newBaseController(cfg *BaseControllerConfig) (*BaseController, error) {
 	}
 	return &BaseController{
 		dynamicClient: dynamicClient,
-		restConfig:    restConfig,
 		queryServers:  queryServerMap,
 		argoCDClient:  argoClient,
 	}, nil
@@ -118,14 +118,14 @@ func initApplicationInformer(dynamicClient dynamic.Interface, executor Executabl
 
 	// Add event handlers
 	_, err := informer.AddEventHandler(cache.ResourceEventHandlerFuncs{
-		AddFunc: func(obj interface{}) {
+		AddFunc: func(obj any) {
 			unstructuredObj := obj.(*unstructured.Unstructured)
 			log.Infof("Object Added: %s/%s", unstructuredObj.GetNamespace(), unstructuredObj.GetName())
 			if err := executor.execute(); err != nil {
 				log.Error(err)
 			}
 		},
-		UpdateFunc: func(oldObj, newObj interface{}) {
+		UpdateFunc: func(oldObj, newObj any) {
 			oldUnstructured := oldObj.(*unstructured.Unstructured)
 			newUnstructured := newObj.(*unstructured.Unstructured)
 			log.Infof("Object Updated: %s/%s (ResourceVersion: %s -> %s)",
@@ -135,7 +135,7 @@ func initApplicationInformer(dynamicClient dynamic.Interface, executor Executabl
 				log.Error(err)
 			}
 		},
-		DeleteFunc: func(obj interface{}) {
+		DeleteFunc: func(obj any) {
 			unstructuredObj := obj.(*unstructured.Unstructured)
 			log.Infof("Object Deleted: %s/%s", unstructuredObj.GetNamespace(), unstructuredObj.GetName())
 			if err := executor.execute(); err != nil {
@@ -201,7 +201,7 @@ func listClusterConfigs(dynamicClient dynamic.Interface, argocdNS string) ([]*re
 		if err != nil {
 			return nil, fmt.Errorf("failed to unmarshal cluster config: %w", err)
 		}
-		if len(kubeConfig.Host) == 0 {
+		if kubeConfig.Host == "" {
 			log.Errorf("ignoring kubeconfig with empty host for cluster secret '%s/%s'", secret.GetNamespace(), secret.GetName())
 			continue
 		}

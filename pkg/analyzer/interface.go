@@ -3,8 +3,9 @@ package analyzer
 import (
 	"context"
 
-	"github.com/anandf/resource-tracker/pkg/common"
 	"k8s.io/client-go/rest"
+
+	"github.com/anandf/resource-tracker/pkg/common"
 )
 
 // Options holds the configuration required to run an analysis.

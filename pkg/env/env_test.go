@@ -1,7 +1,6 @@
 package env
 
 import (
-	"os"
 	"testing"
 )
 
@@ -9,8 +8,7 @@ func TestGetStringVal(t *testing.T) {
 	t.Run("returns environment variable value when set", func(t *testing.T) {
 		envVar := "TEST_ENV_VAR"
 		expectedValue := "test_value"
-		os.Setenv(envVar, expectedValue)
-		defer os.Unsetenv(envVar)
+		t.Setenv(envVar, expectedValue)
 
 		result := GetStringVal(envVar, "default_value")
 		if result != expectedValue {
@@ -31,8 +29,7 @@ func TestGetStringVal(t *testing.T) {
 	t.Run("returns default value when environment variable is empty", func(t *testing.T) {
 		envVar := "EMPTY_ENV_VAR"
 		defaultValue := "default_value"
-		os.Setenv(envVar, "")
-		defer os.Unsetenv(envVar)
+		t.Setenv(envVar, "")
 
 		result := GetStringVal(envVar, defaultValue)
 		if result != defaultValue {

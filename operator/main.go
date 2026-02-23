@@ -8,7 +8,7 @@ import (
 
 // newRootCommand implements the root command of argocd-resource-tracker
 func newRootCommand() error {
-	var rootCmd = &cobra.Command{
+	rootCmd := &cobra.Command{
 		Use:   "argocd-resource-tracker-operator",
 		Short: "Dynamically update resource.inclusions based on the resources managed by Argo Applications",
 	}

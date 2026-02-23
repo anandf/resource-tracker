@@ -2,16 +2,18 @@ package graphbackend
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
+
+	"github.com/argoproj/argo-cd/v3/pkg/apis/application/v1alpha1"
+	log "github.com/sirupsen/logrus"
 
 	"github.com/anandf/resource-tracker/pkg/analyzer"
 	"github.com/anandf/resource-tracker/pkg/argocd"
 	"github.com/anandf/resource-tracker/pkg/common"
 	"github.com/anandf/resource-tracker/pkg/graph"
 	"github.com/anandf/resource-tracker/pkg/kube"
-	"github.com/argoproj/argo-cd/v3/pkg/apis/application/v1alpha1"
-	log "github.com/sirupsen/logrus"
 )
 
 // It caches one QueryServer per destination cluster.
@@ -37,7 +39,7 @@ func (b *Backend) Execute(ctx context.Context, opts analyzer.Options) (*common.G
 	logger.Info("Starting graph (Cyphernetes) analysis backend...")
 
 	if opts.KubeConfig == nil {
-		return nil, fmt.Errorf("graph backend: KubeConfig is nil in Options")
+		return nil, errors.New("graph backend: KubeConfig is nil in Options")
 	}
 
 	// Initialize ArgoCD client against the control-plane cluster.
@@ -73,7 +75,7 @@ func (b *Backend) Execute(ctx context.Context, opts analyzer.Options) (*common.G
 		if qs, err := b.getQueryServerForApp(ctx, argoCDClient, argoApp, opts.KubeConfigPath, trackingMethod, appLogger); err != nil {
 			appLogger.WithError(err).Error("Error getting query server for destination cluster")
 		} else {
-			appChildren, err := argoCDClient.GetApplicationChildManifests(ctx, argoApp, opts.KubeConfigPath, "")
+			appChildren, err := argoCDClient.GetApplicationChildManifests(ctx, argoApp)
 			if err != nil {
 				appLogger.WithError(err).Error("Error getting application children")
 			} else {
@@ -93,7 +95,7 @@ func (b *Backend) Execute(ctx context.Context, opts analyzer.Options) (*common.G
 
 		// Always try to augment with resources inferred from Application.status,
 		// even if graph traversal failed.
-		resources, err := argoCDClient.GetResourcesFromApplicationStatus(ctx, argoApp)
+		resources, err := argoCDClient.GetResourcesFromApplicationStatus(argoApp)
 		if err != nil {
 			appLogger.WithError(err).Error("Error getting resources from application status")
 		} else {
@@ -109,7 +111,7 @@ func (b *Backend) Execute(ctx context.Context, opts analyzer.Options) (*common.G
 			appLogger := logger.WithField("applicationName", argoApp.Name)
 			appLogger.Info("Processing application")
 			appLogger.Debugf("Querying Argo CD application %q", argoApp.Name)
-			appChildren, err := argoCDClient.GetApplicationChildManifests(ctx, &argoApp, opts.KubeConfigPath, "")
+			appChildren, err := argoCDClient.GetApplicationChildManifests(ctx, &argoApp)
 			if err != nil {
 				appLogger.WithError(err).Error("Error getting application children")
 			}
@@ -132,7 +134,7 @@ func (b *Backend) Execute(ctx context.Context, opts analyzer.Options) (*common.G
 			}
 			// Always try to augment with resources inferred from Application.status,
 			// even if graph traversal failed.
-			resources, err := argoCDClient.GetResourcesFromApplicationStatus(ctx, &argoApp)
+			resources, err := argoCDClient.GetResourcesFromApplicationStatus(&argoApp)
 			if err != nil {
 				appLogger.WithError(err).Error("Error getting resources from application status")
 				continue
@@ -188,7 +190,7 @@ func (b *Backend) getQueryServerForApp(
 		return nil, fmt.Errorf("failed to build rest.Config for cluster %q: %w", server, err)
 	}
 
-	qs, err := graph.NewQueryServer(restCfg, trackingMethod, true)
+	qs, err := graph.NewQueryServer(restCfg, trackingMethod)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create query server for cluster %q: %w", server, err)
 	}

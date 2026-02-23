@@ -12,7 +12,6 @@ import (
 func GetStringVal(envVar string, defaultValue string) string {
 	if val := os.Getenv(envVar); val != "" {
 		return val
-	} else {
-		return defaultValue
 	}
+	return defaultValue
 }

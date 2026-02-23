@@ -9,16 +9,21 @@ import (
 )
 
 type Void struct{}
-type ResourceInfoSet map[ResourceInfo]Void
-type ResourceInfo struct {
-	Kind      string
-	Group     string
-	Name      string
-	Namespace string
-}
 
-type Kinds map[string]Void
-type GroupedResourceKinds map[string]Kinds
+type (
+	ResourceInfoSet map[ResourceInfo]Void
+	ResourceInfo    struct {
+		Kind      string
+		Group     string
+		Name      string
+		Namespace string
+	}
+)
+
+type (
+	Kinds                map[string]Void
+	GroupedResourceKinds map[string]Kinds
+)
 
 type ResourceInclusionEntry struct {
 	APIGroups []string `json:"apiGroups,omitempty"`
@@ -84,10 +89,10 @@ func (g *GroupedResourceKinds) Equal(other *GroupedResourceKinds) bool {
 		return false
 	}
 	for otherGroupName, otherKinds := range *other {
-		if _, ok := (*g)[otherGroupName]; !ok {
+		currentKinds, ok := (*g)[otherGroupName]
+		if !ok {
 			return false
 		}
-		currentKinds, _ := (*g)[otherGroupName]
 		if !currentKinds.Equal(&otherKinds) {
 			return false
 		}
@@ -110,19 +115,20 @@ func (g *GroupedResourceKinds) FromYaml(resourceInclusionsYaml string) error {
 		return err
 	}
 	for _, resourceInclusion := range existingResourceInclusionsInCM {
-		for _, apiGroup := range resourceInclusion.APIGroups {
-			group := apiGroup
-			if group == "" {
-				group = "core"
+		if len(resourceInclusion.APIGroups) == 0 {
+			continue
+		}
+		// check only the first item in apiGroup
+		apiGroup := resourceInclusion.APIGroups[0]
+		group := apiGroup
+		if group == "" {
+			group = "core"
+		}
+		for _, kind := range resourceInclusion.Kinds {
+			if (*g)[group] == nil {
+				(*g)[group] = make(map[string]Void)
 			}
-			for _, kind := range resourceInclusion.Kinds {
-				if (*g)[group] == nil {
-					(*g)[group] = make(map[string]Void)
-				}
-				(*g)[group][kind] = Void{}
-			}
-			// break after the first item in apiGroup list
-			break
+			(*g)[group][kind] = Void{}
 		}
 	}
 	return nil

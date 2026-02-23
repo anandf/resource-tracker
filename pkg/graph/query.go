@@ -1,17 +1,22 @@
 package graph
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"strings"
 
-	"github.com/anandf/resource-tracker/pkg/common"
 	"github.com/avitaltamir/cyphernetes/pkg/core"
 	"github.com/avitaltamir/cyphernetes/pkg/provider"
 	"github.com/avitaltamir/cyphernetes/pkg/provider/apiserver"
 	log "github.com/sirupsen/logrus"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/rest"
+	aggregator "k8s.io/kube-aggregator/pkg/client/clientset_generated/clientset"
+
+	"github.com/anandf/resource-tracker/pkg/common"
 )
 
 const (
@@ -65,33 +70,22 @@ var (
 	}
 
 	leafKinds = map[string]bool{
-		"ConfigMap":      true,
-		"Secret":         true,
-		"ServiceAccount": true,
-		"Namespace":      true,
-	}
-
-	defaultIncludedResources = common.ResourceInfoSet{
-		common.ResourceInfo{
-			Kind:  "ConfigMap",
-			Group: "",
-		}: common.Void{},
-		common.ResourceInfo{
-			Kind:  "Secret",
-			Group: "",
-		}: common.Void{},
-		common.ResourceInfo{
-			Kind:  "ServiceAccount",
-			Group: "",
-		}: common.Void{},
-		common.ResourceInfo{
-			Kind:  "Pod",
-			Group: "",
-		}: common.Void{},
-		common.ResourceInfo{
-			Kind:  "Namespace",
-			Group: "",
-		}: common.Void{},
+		"Role":                       true,
+		"RoleBinding":                true,
+		"ClusterRole":                true,
+		"ClusterRoleBinding":         true,
+		"ConfigMap":                  true,
+		"Secret":                     true,
+		"ServiceAccount":             true,
+		"Namespace":                  true,
+		"PersistentVolume":           true,
+		"PersistentVolumeClaim":      true,
+		"Endpoints":                  true,
+		"EndpointSlice":              true,
+		"NetworkPolicy":              true,
+		"Ingress":                    true,
+		"Route":                      true,
+		"SecurityContextConstraints": true,
 	}
 )
 
@@ -104,7 +98,7 @@ type QueryServer struct {
 	VisitedKinds        map[common.ResourceInfo]bool
 }
 
-func NewQueryServer(restConfig *rest.Config, trackingMethod string, loadCustomRules bool) (*QueryServer, error) {
+func NewQueryServer(restConfig *rest.Config, trackingMethod string) (*QueryServer, error) {
 	// Create the API server provider
 	p, err := apiserver.NewAPIServerProviderWithOptions(&apiserver.APIServerProviderConfig{
 		Kubeconfig: restConfig,
@@ -123,29 +117,8 @@ func NewQueryServer(restConfig *rest.Config, trackingMethod string, loadCustomRu
 		fieldAMatchCriteria = AnnotationTrackingCriteria
 		comparison = core.StringContains
 	}
-	if loadCustomRules {
-		for _, knownResourceKind := range p.(*apiserver.APIServerProvider).GetKnownResourceKinds() {
-			if blackListedKinds[knownResourceKind] || leafKinds[knownResourceKind] {
-				log.Infof("skipping resource kind: %s", knownResourceKind)
-				continue
-			}
-			relationshipTypeName := strings.ToUpper(fmt.Sprintf("%s_%s_%s", "ARGOAPP_OWN", tracker, knownResourceKind))
-			if strings.Index(relationshipTypeName, ".") != -1 {
-				relationshipTypeName = strings.Replace(relationshipTypeName, ".", "_", -1)
-			}
-			core.AddRelationshipRule(core.RelationshipRule{
-				KindA:        strings.ToLower(knownResourceKind),
-				KindB:        "applications.argoproj.io",
-				Relationship: core.RelationshipType(relationshipTypeName),
-				MatchCriteria: []core.MatchCriterion{
-					{
-						FieldA:         fieldAMatchCriteria,
-						FieldB:         "$.metadata.name",
-						ComparisonType: comparison,
-					},
-				},
-			})
-		}
+	if isOpenShiftCluster(restConfig) {
+		log.Info("OpenShift cluster detected, adding OpenShift specific rules")
 		addOpenShiftSpecificRules()
 	}
 	// Create query executor with the provider
@@ -161,7 +134,6 @@ func NewQueryServer(restConfig *rest.Config, trackingMethod string, loadCustomRu
 		Comparison:          comparison,
 		VisitedKinds:        make(map[common.ResourceInfo]bool),
 	}, nil
-
 }
 
 func (q *QueryServer) GetApplicationChildResources(name, namespace string) (common.ResourceInfoSet, error) {
@@ -175,10 +147,6 @@ func (q *QueryServer) GetApplicationChildResources(name, namespace string) (comm
 
 func (q *QueryServer) GetNestedChildResources(resource *common.ResourceInfo) (common.ResourceInfoSet, error) {
 	allLevelChildren := make(common.ResourceInfoSet)
-	for resInfo := range defaultIncludedResources {
-		allLevelChildren[resInfo] = common.Void{}
-		q.VisitedKinds[resInfo] = true
-	}
 	allLevelChildren, err := q.depthFirstTraversal(resource, allLevelChildren)
 	if err != nil {
 		return nil, err
@@ -189,31 +157,31 @@ func (q *QueryServer) GetNestedChildResources(resource *common.ResourceInfo) (co
 // getChildren returns the immediate direct child of a given node by doing a graph query.
 func (q *QueryServer) getChildren(parentResourceInfo *common.ResourceInfo) ([]*common.ResourceInfo, error) {
 	if leafKinds[parentResourceInfo.Kind] || blackListedKinds[parentResourceInfo.Kind] {
-		log.Infof("skipping leaf or blacklisted resource: %v", parentResourceInfo)
+		log.Debugf("skipping leaf or blacklisted resource: %v", parentResourceInfo)
 		return nil, nil
 	}
 	visitedKindKey := common.ResourceInfo{Kind: parentResourceInfo.Kind, Group: parentResourceInfo.Group}
 	if _, ok := q.VisitedKinds[visitedKindKey]; ok {
-		log.Infof("skipping resource %v as kind already visited", parentResourceInfo)
+		log.Debugf("skipping resource %v as kind already visited", parentResourceInfo)
 		return nil, nil
 	}
-	unambiguousKind := parentResourceInfo.Kind
+	var unambiguousKind string
 	if parentResourceInfo.Group == "" {
 		unambiguousKind = fmt.Sprintf("%s.%s", "core", parentResourceInfo.Kind)
+	} else {
+		pluralKind := strings.ToLower(parentResourceInfo.Kind) + "s"
+		unambiguousKind = fmt.Sprintf("%s.%s", pluralKind, parentResourceInfo.Group)
 	}
 	// Get the query string
-	queryStr := fmt.Sprintf("MATCH (p: %s) -> (c) RETURN c.kind, c.apiVersion, c.metadata.namespace", parentResourceInfo.Kind)
+	queryStr := fmt.Sprintf("MATCH (p: %s) -> (c) RETURN c.kind, c.apiVersion, c.metadata.namespace", unambiguousKind)
 	if parentResourceInfo.Name != "" {
-		queryStr = fmt.Sprintf("MATCH (p: %s{name:\"%s\"}) -> (c) RETURN c.kind, c.apiVersion, c.metadata.namespace", unambiguousKind, parentResourceInfo.Name)
+		queryStr = fmt.Sprintf("MATCH (p: %s{name:%q}) -> (c) RETURN c.kind, c.apiVersion, c.metadata.namespace", unambiguousKind, parentResourceInfo.Name)
 	}
 	queryResult, err := q.executeQuery(queryStr, parentResourceInfo.Namespace)
 	if err != nil {
 		return nil, err
 	}
-	results, err := extractResourceInfo(queryResult, "c")
-	if err != nil {
-		return nil, err
-	}
+	results := extractResourceInfo(queryResult, "c")
 	q.VisitedKinds[visitedKindKey] = true
 	return results, nil
 }
@@ -224,6 +192,12 @@ func (q *QueryServer) executeQuery(queryStr, namespace string) (*core.QueryResul
 	ast, err := core.ParseQuery(queryStr)
 	if err != nil {
 		return nil, err
+	}
+	// If namespace is empty, set all namespaces to true
+	if namespace == "" {
+		core.AllNamespaces = true
+	} else {
+		core.AllNamespaces = false
 	}
 
 	// Execute the query against the Kubernetes API.
@@ -262,31 +236,15 @@ func (q *QueryServer) depthFirstTraversal(info *common.ResourceInfo, visitedNode
 	return visitedNodes, nil
 }
 
-// AddRuleForResourceKind adds the rule for a new resource kind that was added
-func (q *QueryServer) AddRuleForResourceKind(resourceKind string) {
-	core.AddRelationshipRule(core.RelationshipRule{
-		KindA:        strings.ToLower(resourceKind),
-		KindB:        "applications",
-		Relationship: core.RelationshipType(strings.ToUpper(fmt.Sprintf("%s_%s_%s", "ARGOAPP_OWN", q.Tracker, resourceKind))),
-		MatchCriteria: []core.MatchCriterion{
-			{
-				FieldA:         q.FieldAMatchCriteria,
-				FieldB:         "$.metadata.name",
-				ComparisonType: q.Comparison,
-			},
-		},
-	})
-}
-
 // extractResourceInfo extracts the ResourceInfo from a given query result and variable name.
-func extractResourceInfo(queryResult *core.QueryResult, variable string) ([]*common.ResourceInfo, error) {
+func extractResourceInfo(queryResult *core.QueryResult, variable string) []*common.ResourceInfo {
 	child := queryResult.Data[variable]
 	if child == nil {
-		return nil, nil
+		return nil
 	}
-	resourceInfoList := make([]*common.ResourceInfo, 0, len(child.([]interface{})))
-	for _, meta := range child.([]interface{}) {
-		info, ok := meta.(map[string]interface{})
+	resourceInfoList := make([]*common.ResourceInfo, 0, len(child.([]any)))
+	for _, meta := range child.([]any) {
+		info, ok := meta.(map[string]any)
 		if !ok {
 			continue
 		}
@@ -308,7 +266,7 @@ func extractResourceInfo(queryResult *core.QueryResult, variable string) ([]*com
 			Group: group,
 			Name:  info["name"].(string),
 		}
-		metadata, ok := info["metadata"].(map[string]interface{})
+		metadata, ok := info["metadata"].(map[string]any)
 		if !ok {
 			continue
 		}
@@ -318,7 +276,7 @@ func extractResourceInfo(queryResult *core.QueryResult, variable string) ([]*com
 		}
 		resourceInfoList = append(resourceInfoList, &resourceInfo)
 	}
-	return resourceInfoList, nil
+	return resourceInfoList
 }
 
 // addOpenShiftSpecificRules adds rules that are specific to OpenShift CustomResources
@@ -335,4 +293,22 @@ func addOpenShiftSpecificRules() {
 			},
 		},
 	})
+}
+
+func isOpenShiftCluster(restConfig *rest.Config) bool {
+	aggregatorClient, err := aggregator.NewForConfig(restConfig)
+	if err != nil {
+		return false
+	}
+	gv := schema.GroupVersion{
+		Group:   "config.openshift.io",
+		Version: "v1",
+	}
+	if err = discovery.ServerSupportsVersion(aggregatorClient, gv); err != nil {
+		// check if the API is registered
+		_, err = aggregatorClient.ApiregistrationV1().APIServices().
+			Get(context.TODO(), fmt.Sprintf("%s.%s", gv.Version, gv.Group), metav1.GetOptions{})
+		return err == nil
+	}
+	return true
 }

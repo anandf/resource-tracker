@@ -6,22 +6,23 @@ import (
 	"reflect"
 	"strings"
 
-	"github.com/anandf/resource-tracker/pkg/common"
 	"github.com/emirpasic/gods/sets/hashset"
 	log "github.com/sirupsen/logrus"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	apiextensionsclient "k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset"
 	apiextensionsinformer "k8s.io/apiextensions-apiserver/pkg/client/informers/externalversions"
-	k8sErrors "k8s.io/apimachinery/pkg/api/errors"
-	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/cache"
+
+	"github.com/anandf/resource-tracker/pkg/common"
 )
 
-//TODO: Rename this pkg
+// TODO: Rename this pkg
 
 type ResourceMapper struct {
 	DiscoveryClient        discovery.DiscoveryInterface
@@ -132,9 +133,9 @@ func NewResourceMapper(destinationConfig *rest.Config) (*ResourceMapper, error) 
 	}
 
 	// Set up event handlers
-	crdInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
+	_, err = crdInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: rm.addToResourceList,
-		UpdateFunc: func(oldObj, newObj interface{}) {
+		UpdateFunc: func(oldObj, newObj any) {
 			oldCRD, ok1 := oldObj.(*apiextensionsv1.CustomResourceDefinition)
 			newCRD, ok2 := newObj.(*apiextensionsv1.CustomResourceDefinition)
 			if !ok1 || !ok2 {
@@ -149,10 +150,13 @@ func NewResourceMapper(destinationConfig *rest.Config) (*ResourceMapper, error) 
 			rm.addToResourceList(newObj)
 		},
 	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to add CRD event handler: %w", err)
+	}
 	return rm, nil
 }
 
-func (r *ResourceMapper) addToResourceList(obj interface{}) {
+func (r *ResourceMapper) addToResourceList(obj any) {
 	crd, ok := obj.(*apiextensionsv1.CustomResourceDefinition)
 	if !ok {
 		log.Errorf("Failed to convert object to CRD")
@@ -165,10 +169,10 @@ func (r *ResourceMapper) addToResourceList(obj interface{}) {
 		}
 
 		// Check if the CRD is namespaced
-		if !(crd.Spec.Scope == apiextensionsv1.NamespaceScoped) {
+		if crd.Spec.Scope != apiextensionsv1.NamespaceScoped {
 			gv := fmt.Sprintf("%s/%s", crd.Spec.Group, version.Name)
 			key := GetResourceKey(gv, crd.Spec.Names.Kind)
-			//log.Infof("Adding cluster scoped resource: %s", key)
+			// log.Infof("Adding cluster scoped resource: %s", key)
 			r.ClusterScopedResources.Add(key)
 			continue
 		}
@@ -177,13 +181,6 @@ func (r *ResourceMapper) addToResourceList(obj interface{}) {
 			Group:    crd.Spec.Group,
 			Version:  version.Name,
 			Resource: crd.Spec.Names.Plural, // CRD resources are named using the `plural` field
-		}
-
-		// Log whether we're updating or adding a new CRD version
-		if r.ResourceList.Contains(gvr) {
-			//	log.Debugf("Updating existing CRD version: %s/%s (%s)", gvr.Group, gvr.Version, gvr.Resource)
-		} else {
-			//log.Infof("Adding new CRD version: %s/%s (%s)", gvr.Group, gvr.Version, gvr.Resource)
 		}
 
 		r.ResourceList.Add(gvr)
@@ -244,6 +241,7 @@ func GetResourceKey(groupVersion, kind string) string {
 	}
 	return fmt.Sprintf("%s_%s", group, kind)
 }
+
 func (r *ResourceMapper) StartInformer() {
 	log.Info("Starting informer for cluster ", r.ClusterHostname)
 	r.InformerFactory.Start(context.Background().Done())
@@ -261,12 +259,12 @@ func (r *ResourceMapper) GetClusterResourcesRelation(ctx context.Context) (map[s
 		}
 		var continueToken string
 		for {
-			resourceList, err := r.DynamicClient.Resource(gvr).Namespace(v1.NamespaceAll).List(ctx, v1.ListOptions{
+			resourceList, err := r.DynamicClient.Resource(gvr).Namespace(metav1.NamespaceAll).List(ctx, metav1.ListOptions{
 				Limit:    250,
 				Continue: continueToken,
 			})
 			if err != nil {
-				if !k8sErrors.IsNotFound(err) {
+				if !apierrors.IsNotFound(err) {
 					log.Errorf("Failed to list resource %s: %v", gvr, err)
 				}
 				break
